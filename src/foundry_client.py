@@ -102,7 +102,13 @@ def get_client() -> Any:
 
         _endpoint = _discover_endpoint()
         # The local server ignores the API key, but the OpenAI client requires a non-empty one.
-        _client = OpenAI(base_url=_base_url(_endpoint), api_key="foundry-local")
+        # A bounded timeout means a stuck request errors out instead of freezing forever.
+        _client = OpenAI(
+            base_url=_base_url(_endpoint),
+            api_key="foundry-local",
+            timeout=config.REQUEST_TIMEOUT,
+            max_retries=0,
+        )
         return _client
 
 
@@ -135,17 +141,34 @@ def _is_not_loaded(exc: Exception) -> bool:
     return "not loaded" in str(exc).lower()
 
 
+def _is_timeout(exc: Exception) -> bool:
+    return "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower()
+
+
+def _timeout_error(model_id: str) -> RuntimeError:
+    return RuntimeError(
+        f"The Foundry server did not respond within {config.REQUEST_TIMEOUT:.0f}s for model "
+        f"'{model_id}'. On the Intel iGPU (OpenVINO) the first load compiles the model and can "
+        f"be very slow. Either wait longer (raise RAG_REQUEST_TIMEOUT) or switch to the fast "
+        f"cached NVIDIA/TensorRT model:  setx RAG_CHAT_MODEL phi-3.5-mini-instruct-trtrtx-gpu"
+    )
+
+
 def _call(fn, model_id: str):
-    """Run `fn()`; on a 'model not loaded' error, load the model once and retry."""
+    """Run `fn()`; on 'model not loaded' load the model once and retry; map timeouts to a hint."""
     try:
         return fn()
     except Exception as exc:
+        if _is_timeout(exc):
+            raise _timeout_error(model_id) from exc
         if not _is_not_loaded(exc):
             raise
         _ensure_loaded(model_id)
         try:
             return fn()
         except Exception as exc2:
+            if _is_timeout(exc2):
+                raise _timeout_error(model_id) from exc2
             if _is_not_loaded(exc2):
                 raise RuntimeError(
                     f"Foundry Local could not load model '{model_id}'. "

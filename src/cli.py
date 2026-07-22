@@ -3,16 +3,29 @@
     python -m src.cli            # ask questions in a loop
     python -m src.cli --debug    # also print retrieved chunks + similarity scores
 
-Type `quit` or submit an empty line to exit.
+Type `quit` (or `q`, `bye`, an empty line, Ctrl+C) to exit.
 """
 
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 
-from . import config
+from . import config, foundry_client
 from .pipeline import Answer, Pipeline
+
+QUIT_WORDS = {
+    "quit",
+    "exit",
+    "bye",
+    "q",
+    "hadi sg",
+    "thank you for your services",
+    "thank you for your soul",
+}
+
+GOODBYE_MESSAGES = ["Bye", "hadi sende sg", "Adamsin Quershma", "Gorusuruz knk", "babays"]
 
 
 def _print_answer(result: Answer, debug: bool) -> None:
@@ -40,6 +53,15 @@ def run(debug: bool = False) -> None:
             file=sys.stderr,
         )
         return
+
+    # Pre-load the models into the server up front so the slow first-load (the iGPU/OpenVINO
+    # compile can take a while) happens here with a message, not as a mid-question freeze.
+    print("Warming up models (first load can take a while on the iGPU)...")
+    try:
+        foundry_client.warmup()
+    except Exception as exc:  # noqa: BLE001 - non-fatal; the first query will surface details
+        print(f"  (warm-up skipped: {exc})", file=sys.stderr)
+
     print(f"Ready — {pipeline.size} chunks indexed. Ask a CAN-bus / firmware question.\n")
 
     while True:
@@ -48,12 +70,12 @@ def run(debug: bool = False) -> None:
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if not question or question.lower() in {"quit", "exit"}:
+        if not question or question.lower() in QUIT_WORDS:
             break
         result = pipeline.answer(question)
         _print_answer(result, debug)
 
-    print("Bye.")
+    print(random.choice(GOODBYE_MESSAGES))
 
 
 def main() -> None:
