@@ -34,8 +34,8 @@ user question ──► answer_query(question)
 - **Pipeline:** `src/pipeline.py` → `answer_query(question)` = retrieve + generate + cite.
 - **Data:** `data/kb.sqlite` — chunk text + L2-normalized float32 embeddings (SQLite only, no
   external vector DB).
-- **Inference:** Foundry Local — chat on the Intel iGPU (OpenVINO), embeddings on the NVIDIA
-  GPU (CUDA).
+- **Inference:** the running Foundry Local server (OpenAI-compatible HTTP endpoint) — chat on
+  the Intel iGPU (OpenVINO), embeddings on the NVIDIA GPU (CUDA).
 
 ### Model placement
 
@@ -84,7 +84,28 @@ foundry model download qwen3-embedding-0.6b        # cached as ...-cuda-gpu
 
 After this one-time download, **nothing in the query path touches the network.**
 
-### 3. Build the knowledge base
+### 3. Start the Foundry Local server
+
+The app talks to the running Foundry server over its OpenAI-compatible HTTP endpoint, so start
+it first (from a shell where the `foundry` CLI is on PATH — the **same user context** you'll
+run Python in; don't mix an elevated daemon with a normal-user app):
+
+```bash
+foundry server start
+foundry server status          # note the "Web URLs http://127.0.0.1:<port>"
+```
+
+The endpoint is auto-discovered from `foundry server status`. If the `foundry` CLI isn't on
+PATH for your Python process, set it explicitly instead:
+
+```powershell
+setx FOUNDRY_LOCAL_ENDPOINT http://127.0.0.1:54163   # use your actual port
+```
+
+Models are **loaded into the server on demand** — the first ingest/query triggers
+`foundry model load <id>` automatically, so no manual load step is normally needed.
+
+### 4. Build the knowledge base
 
 ```bash
 python -m src.ingest            # read data/raw/ → chunk → embed → data/kb.sqlite
@@ -194,13 +215,25 @@ python -m pytest tests/test_pipeline.py -q
   foundry server status
   ```
 
-- **`Model '...-openvino-gpu' not found`, yet `foundry model list --variants` shows it cached.**
-  The SDK's `get_model_variant()` / `list_models()` only expose the remote `*-generic-cpu`
-  catalog; on-device GPU variants (OpenVINO / CUDA / TensorRT) are surfaced by
-  `get_cached_models()` and each model's `.variants`. `src/foundry_client.py` searches all of
-  those, so the pinned GPU IDs resolve. If you still see the error, its message now lists the
-  cached IDs the SDK reports — update `CHAT_MODEL_ID` / `EMBED_MODEL_ID` in `src/config.py` to
-  match.
+- **`Model '...-openvino-gpu' not found via the Foundry Local SDK` / `Cached models the SDK
+  reports: (none)`.** The in-process SDK core doesn't share the running daemon's model cache or
+  execution-provider packs, so it can't see your cached GPU variants. That's why the app talks
+  to the server over HTTP instead. Make sure `foundry server start` is running and the endpoint
+  is discoverable (see "Could not find the endpoint" below).
+
+- **`Could not find the Foundry Local server endpoint`.** Either the server isn't running
+  (`foundry server start`) or the `foundry` CLI isn't on PATH for your Python process. Fix by
+  setting the endpoint explicitly: `setx FOUNDRY_LOCAL_ENDPOINT http://127.0.0.1:<port>` using
+  the port from `foundry server status`, then open a new terminal so the variable takes effect.
+
+- **`Model '...' is not loaded`.** The server lists cached models but loads them on demand. The
+  app auto-runs `foundry model load <id>` on the first request; if that can't run (CLI not on
+  PATH), load them yourself once per server session:
+
+  ```powershell
+  foundry model load qwen3-embedding-0.6b-cuda-gpu
+  foundry model load phi-4-mini-instruct-openvino-gpu
+  ```
 
 - **First chat is very slow (tens of seconds or more).** OpenVINO compiles the model on first
   load. If `phi-4-mini` on the iGPU stays too slow for you, switch `CHAT_MODEL_ID` in
@@ -222,23 +255,29 @@ python -m pytest tests/test_pipeline.py -q
   accept the embed/chat callables, so the whole pipeline can be unit-tested without the
   Foundry runtime.
 
-### Foundry Local SDK note
+### Foundry Local integration note
 
-This code targets the Foundry Local SDK v1.x native client API:
+The app talks to the running `foundry server` over its **OpenAI-compatible HTTP endpoint**
+rather than the in-process SDK core (which, in practice, doesn't share the daemon's model cache
+or execution-provider packs and so can't resolve the on-device GPU variants). This also avoids
+Windows admin/normal-user cache-visibility problems, since it's just localhost HTTP:
 
 ```python
-from foundry_local_sdk import Configuration, FoundryLocalManager
-from foundry_local_sdk.openai import ChatClientSettings
+from openai import OpenAI
 
-FoundryLocalManager.initialize(Configuration(app_name="rag-can-assistant"))
-catalog = FoundryLocalManager.instance.catalog
-model = catalog.get_model_variant("phi-4-mini-instruct-openvino-gpu")
-model.download(); model.load()
-answer = model.get_chat_client().complete_chat(messages).choices[0].message.content
+client = OpenAI(base_url="http://127.0.0.1:54163/v1", api_key="foundry-local")
+answer = client.chat.completions.create(
+    model="phi-4-mini-instruct-openvino-gpu", messages=messages
+).choices[0].message.content
+vecs = client.embeddings.create(
+    model="qwen3-embedding-0.6b-cuda-gpu", input=texts
+).data
 ```
 
-All Foundry calls are isolated in `src/foundry_client.py`; if the SDK surface changes, that is
-the only file to adjust.
+The endpoint is auto-discovered from `foundry server status` (override with
+`FOUNDRY_LOCAL_ENDPOINT`), and models are loaded on demand via `foundry model load`. All
+Foundry calls are isolated in `src/foundry_client.py`; that's the only file to adjust if the
+integration changes.
 
 ---
 

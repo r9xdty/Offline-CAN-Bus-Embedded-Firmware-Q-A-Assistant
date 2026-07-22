@@ -1,4 +1,4 @@
-"""Foundry Local integration: chat client (Intel iGPU) + embedding client (NVIDIA GPU).
+"""Foundry Local integration via the running server's OpenAI-compatible HTTP endpoint.
 
 This is the only module that talks to Foundry Local. Everything else depends on the two
 callables it exposes:
@@ -6,60 +6,37 @@ callables it exposes:
     embed_texts(texts) -> np.ndarray   # raw (un-normalized) float32 vectors, shape (n, dim)
     chat(messages)     -> str          # grounded answer text
 
-The Foundry Local runtime and its models are only available on the target machine (Windows +
-Intel iGPU + NVIDIA RTX 3050 Ti). The SDK is imported lazily inside `get_clients()` so that
-the rest of the package — chunking, cosine search, SQLite storage, prompt building — can be
-imported and unit-tested on any machine without the runtime present.
+**Why HTTP and not the in-process SDK core.** The `foundry-local-sdk` native core runs
+in-process and, in practice, does not share the running `foundry server` daemon's model cache
+or its downloaded execution-provider packs (OpenVINO / CUDA / TensorRT). On a real machine it
+reports zero cached models and only the remote `*-generic-cpu` catalog, so the pinned GPU
+variants can't be resolved through it. The daemon, however, already has everything working and
+exposes an OpenAI-compatible endpoint. Talking to that endpoint over localhost HTTP also
+sidesteps Windows admin/normal-user cache-visibility issues. The build spec explicitly allows
+using the `openai` client against the Foundry endpoint.
 
-API notes (foundry-local-sdk / foundry-local-sdk-winml, v1.x):
-
-    from foundry_local_sdk import Configuration, FoundryLocalManager
-    from foundry_local_sdk.openai import ChatClientSettings
-
-    FoundryLocalManager.initialize(Configuration(app_name="rag-can-assistant"))
-    catalog = FoundryLocalManager.instance.catalog
-    model = catalog.get_model_variant("phi-4-mini-instruct-openvino-gpu")  # exact variant
-    model.download(); model.load()
-    chat = model.get_chat_client()
-    chat.settings = ChatClientSettings(temperature=0.1, max_tokens=512)
-    resp = chat.complete_chat(messages)          # OpenAI-shaped ChatCompletion
-    text = resp.choices[0].message.content
-
-    emb = catalog.get_model_variant("qwen3-embedding-0.6b-cuda-gpu")
-    emb.download(); emb.load()
-    r = emb.get_embedding_client().generate_embeddings(["..."])  # CreateEmbeddingResponse
-    vector = r.data[0].embedding                 # list[float]
-
-Models are initialized once and kept loaded for the process lifetime so each query is fast.
+Prerequisite: the server must be running (`foundry server start`). Models are loaded into the
+server on demand — the server lists cached models but does not auto-load them, so a first call
+triggers `foundry model load <id>` (idempotent) and then retries.
 """
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import subprocess
 import threading
-from dataclasses import dataclass
 from typing import Any, List
 
 import numpy as np
 
 from . import config
 
-
-@dataclass
-class _Clients:
-    manager: Any
-    chat_model: Any
-    embed_model: Any
-    chat_client: Any
-    embed_client: Any
-
-
-_clients: _Clients | None = None
+_client: Any = None
+_endpoint: str | None = None
+_loaded: set[str] = set()
 _lock = threading.Lock()
-
-
-def _norm(model_id: Any) -> str:
-    """Normalize a model id for comparison: lowercase, drop any ':version' suffix."""
-    return str(model_id).lower().split(":", 1)[0]
 
 
 def _alias_of(model_id: str) -> str:
@@ -74,123 +51,115 @@ def _alias_of(model_id: str) -> str:
     return alias
 
 
-def _match(models: Any, target: str) -> Any:
-    """Return a model or nested variant whose normalized id equals `target`, else None."""
-    for m in models or []:
-        if _norm(getattr(m, "id", "")) == target:
-            return m
-        for v in getattr(m, "variants", None) or []:
-            if _norm(getattr(v, "id", "")) == target:
-                return v
-    return None
+def _discover_endpoint() -> str:
+    """Return the base URL of the running Foundry Local server.
 
-
-def _resolve_model(catalog: Any, model_id: str) -> Any:
-    """Return the exact model variant for `model_id`, trying every catalog view.
-
-    On-device GPU variants (OpenVINO / CUDA / TensorRT) are surfaced by ``get_cached_models``
-    and each model's ``.variants`` — NOT by ``get_model_variant``/``list_models``, which only
-    expose the remote ``*-generic-cpu`` catalog. So we search the cached models and variant
-    lists too, and pin the exact variant so device placement stays deterministic.
+    Order: the FOUNDRY_LOCAL_ENDPOINT env var / config value, else parse the URL out of
+    `foundry server status`. Raises a clear error if neither yields an endpoint.
     """
-    target = _norm(model_id)
+    ep = config.FOUNDRY_ENDPOINT
+    if ep:
+        return ep.rstrip("/")
 
-    # 1) Exact variant lookup against the remote catalog.
-    try:
-        model = catalog.get_model_variant(model_id)
-        if model is not None:
-            return model
-    except Exception:
-        pass
-
-    # 2) Among the models actually cached on this machine (where GPU variants live).
-    for source in (catalog.get_cached_models, catalog.list_models):
+    exe = shutil.which("foundry")
+    if exe:
         try:
-            found = _match(source(), target)
-            if found is not None:
-                return found
+            out = subprocess.run(
+                [exe, "server", "status"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            ).stdout
+            match = re.search(r"https?://[\w.]+:\d+", out or "")
+            if match:
+                return match.group(0).rstrip("/")
         except Exception:
             pass
 
-    # 3) By alias, then match the requested variant among the model's variants.
-    try:
-        parent = catalog.get_model(_alias_of(model_id))
-        if parent is not None:
-            found = _match([parent], target)
-            if found is not None:
-                return found
-    except Exception:
-        pass
-
-    # Failure: surface what the SDK can actually see so the fix is obvious.
-    try:
-        cached = [getattr(m, "id", "?") for m in catalog.get_cached_models()]
-    except Exception:
-        cached = []
     raise RuntimeError(
-        f"Model '{model_id}' not found via the Foundry Local SDK.\n"
-        f"Cached models the SDK reports: {cached or '(none)'}\n"
-        "Confirm with `foundry model list --variants`; if the ID differs, update "
-        "CHAT_MODEL_ID / EMBED_MODEL_ID in src/config.py."
+        "Could not find the Foundry Local server endpoint.\n"
+        "Start it with `foundry server start`, then either run from a shell where the "
+        "`foundry` CLI is on PATH (this reads `foundry server status`) or set the "
+        "FOUNDRY_LOCAL_ENDPOINT env var to the Web URL it prints, e.g.\n"
+        "    setx FOUNDRY_LOCAL_ENDPOINT http://127.0.0.1:54163"
     )
 
 
-def _prepare(model: Any) -> None:
-    """Download (if needed) and load a model so it is resident and ready to serve."""
-    if not getattr(model, "is_cached", False):
-        model.download()
-    if not getattr(model, "is_loaded", False):
-        model.load()
+def _base_url(endpoint: str) -> str:
+    endpoint = endpoint.rstrip("/")
+    return endpoint if endpoint.endswith("/v1") else endpoint + "/v1"
 
 
-def get_clients() -> _Clients:
-    """Initialize Foundry Local once and return cached chat + embedding clients.
-
-    Idempotent and thread-safe. The chat model lands on the Intel iGPU (OpenVINO) and the
-    embedding model on the NVIDIA GPU (CUDA) purely by virtue of the pinned variant IDs.
-    """
-    global _clients
-    if _clients is not None:
-        return _clients
-
+def get_client() -> Any:
+    """Return a cached OpenAI client pointed at the running Foundry server. Thread-safe."""
+    global _client, _endpoint
+    if _client is not None:
+        return _client
     with _lock:
-        if _clients is not None:
-            return _clients
+        if _client is not None:
+            return _client
+        from openai import OpenAI  # lazy: only needed when we actually talk to the server
 
-        # Lazy import: only needed when we actually talk to the runtime.
-        from foundry_local_sdk import Configuration, FoundryLocalManager
-        from foundry_local_sdk.openai import ChatClientSettings
+        _endpoint = _discover_endpoint()
+        # The local server ignores the API key, but the OpenAI client requires a non-empty one.
+        _client = OpenAI(base_url=_base_url(_endpoint), api_key="foundry-local")
+        return _client
 
-        if FoundryLocalManager.instance is None:
-            FoundryLocalManager.initialize(Configuration(app_name=config.APP_NAME))
-        manager = FoundryLocalManager.instance
-        catalog = manager.catalog
 
-        chat_model = _resolve_model(catalog, config.CHAT_MODEL_ID)
-        embed_model = _resolve_model(catalog, config.EMBED_MODEL_ID)
-        _prepare(chat_model)
-        _prepare(embed_model)
+def _ensure_loaded(model_id: str) -> None:
+    """Best-effort: load `model_id` into the running server via the CLI (idempotent).
 
-        chat_client = chat_model.get_chat_client()
-        chat_client.settings = ChatClientSettings(
-            temperature=config.TEMPERATURE,
-            max_tokens=config.MAX_ANSWER_TOKENS,
-        )
-        embed_client = embed_model.get_embedding_client()
+    Tries the full variant id first, then the alias. Failures are swallowed here; if the model
+    still isn't loaded the subsequent request raises a clear error via `_call`.
+    """
+    if model_id in _loaded:
+        return
+    exe = shutil.which("foundry")
+    if exe:
+        for target in (model_id, _alias_of(model_id)):
+            try:
+                result = subprocess.run(
+                    [exe, "model", "load", target],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                )
+                if result.returncode == 0:
+                    break
+            except Exception:
+                pass
+    _loaded.add(model_id)
 
-        _clients = _Clients(
-            manager=manager,
-            chat_model=chat_model,
-            embed_model=embed_model,
-            chat_client=chat_client,
-            embed_client=embed_client,
-        )
-        return _clients
+
+def _is_not_loaded(exc: Exception) -> bool:
+    return "not loaded" in str(exc).lower()
+
+
+def _call(fn, model_id: str):
+    """Run `fn()`; on a 'model not loaded' error, load the model once and retry."""
+    try:
+        return fn()
+    except Exception as exc:
+        if not _is_not_loaded(exc):
+            raise
+        _ensure_loaded(model_id)
+        try:
+            return fn()
+        except Exception as exc2:
+            if _is_not_loaded(exc2):
+                raise RuntimeError(
+                    f"Foundry Local could not load model '{model_id}'. "
+                    f"Load it manually with `foundry model load {model_id}` "
+                    f"(or `foundry model load {_alias_of(model_id)}`) and retry."
+                ) from exc2
+            raise
 
 
 def warmup() -> None:
-    """Pre-load both models up front (e.g. at CLI/Streamlit startup)."""
-    get_clients()
+    """Pre-load both models into the server up front (optional; speeds the first query)."""
+    get_client()
+    _ensure_loaded(config.EMBED_MODEL_ID)
+    _ensure_loaded(config.CHAT_MODEL_ID)
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
@@ -200,19 +169,35 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     """
     if not texts:
         return np.empty((0, 0), dtype=np.float32)
-    resp = get_clients().embed_client.generate_embeddings(list(texts))
-    # OpenAI-shaped response: data items carry `.index` and `.embedding`.
+    client = get_client()
+    resp = _call(
+        lambda: client.embeddings.create(model=config.EMBED_MODEL_ID, input=list(texts)),
+        config.EMBED_MODEL_ID,
+    )
     ordered = sorted(resp.data, key=lambda d: getattr(d, "index", 0))
     return np.asarray([d.embedding for d in ordered], dtype=np.float32)
 
 
 def embed_query(text: str) -> np.ndarray:
     """Embed a single query string. Returns a 1-D raw float32 vector."""
-    resp = get_clients().embed_client.generate_embedding(text)
+    client = get_client()
+    resp = _call(
+        lambda: client.embeddings.create(model=config.EMBED_MODEL_ID, input=[text]),
+        config.EMBED_MODEL_ID,
+    )
     return np.asarray(resp.data[0].embedding, dtype=np.float32)
 
 
 def chat(messages: List[dict]) -> str:
     """Run a grounded chat completion on the Intel iGPU and return the answer text."""
-    resp = get_clients().chat_client.complete_chat(messages)
+    client = get_client()
+    resp = _call(
+        lambda: client.chat.completions.create(
+            model=config.CHAT_MODEL_ID,
+            messages=messages,
+            temperature=config.TEMPERATURE,
+            max_tokens=config.MAX_ANSWER_TOKENS,
+        ),
+        config.CHAT_MODEL_ID,
+    )
     return (resp.choices[0].message.content or "").strip()

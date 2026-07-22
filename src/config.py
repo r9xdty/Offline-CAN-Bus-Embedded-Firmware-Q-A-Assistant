@@ -36,6 +36,13 @@ CHAT_MODEL_ID = "phi-4-mini-instruct-openvino-gpu"
 # Embedding — NVIDIA RTX 3050 Ti (CUDA). Move to "...-generic-cpu" only if VRAM gets tight.
 EMBED_MODEL_ID = "qwen3-embedding-0.6b-cuda-gpu"
 
+# Foundry Local server endpoint. We talk to the running `foundry server` over its
+# OpenAI-compatible HTTP endpoint (the in-process SDK core does not share the daemon's model
+# cache / execution-provider packs). Leave blank to auto-discover from `foundry server status`;
+# override by setting the FOUNDRY_LOCAL_ENDPOINT env var to the Web URL it prints
+# (e.g. http://127.0.0.1:54163).
+FOUNDRY_ENDPOINT = os.environ.get("FOUNDRY_LOCAL_ENDPOINT", "").strip()
+
 # --------------------------------------------------------------------------- #
 # Chunking (see spec §8.1) — ~500-800 chars with ~100 char overlap.
 # --------------------------------------------------------------------------- #
