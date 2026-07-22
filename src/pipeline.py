@@ -14,7 +14,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import config
 from . import generate
@@ -22,6 +22,19 @@ from .retrieve import RetrievedChunk, Retriever
 
 # Citations look like [source_name.ext]; match the extensions we actually ingest.
 _CITATION = re.compile(r"\[([^\[\]]+?\.(?:md|markdown|txt|pdf))\]", re.IGNORECASE)
+
+# A prior conversation turn: (user_question, assistant_answer).
+Turn = Tuple[str, str]
+
+# Opening words that signal an elliptical follow-up ("explain that…", "and the extended one?",
+# "it uses which protocol?") whose retrieval benefits from the previous question's context.
+# Only the FIRST word is checked, so a self-contained question that merely contains "it"/"that"
+# ("…how is it structured?") is left untouched.
+_FOLLOWUP_STARTS = {
+    "and", "also", "or", "but", "then", "so",
+    "it", "its", "that", "this", "those", "these", "them", "they", "he", "she",
+    "explain", "elaborate", "expand", "clarify",
+}
 
 
 @dataclass
@@ -33,6 +46,7 @@ class Answer:
     sources: List[str] = field(default_factory=list)
     chunks: List[RetrievedChunk] = field(default_factory=list)
     elapsed_s: float = 0.0
+    mode: str = ""
 
     @property
     def is_refusal(self) -> bool:
@@ -42,6 +56,23 @@ class Answer:
     def top_score(self) -> Optional[float]:
         """Highest similarity among the retrieved chunks (None if nothing retrieved)."""
         return max((c.score for c in self.chunks), default=None)
+
+
+def _retrieval_query(question: str, history: Optional[Sequence[Turn]]) -> str:
+    """Expand an elliptical follow-up with the previous question so retrieval still lands.
+
+    A self-contained question is used as-is; a short or pronoun-y follow-up ("what about at
+    250 kbps?", "explain that") is prefixed with the last user question so the embedding
+    carries the topic.
+    """
+    if not history:
+        return question
+    words = [w.strip("?.,!:;").lower() for w in question.split()]
+    elliptical = len(words) < 6 or (bool(words) and words[0] in _FOLLOWUP_STARTS)
+    if not elliptical:
+        return question
+    prev_question = next((q for q, _ in reversed(list(history)) if q and q.strip()), "")
+    return f"{prev_question} {question}".strip() if prev_question else question
 
 
 def _unique(seq: List[str]) -> List[str]:
@@ -70,21 +101,35 @@ class Pipeline:
     def size(self) -> int:
         return self.retriever.size
 
-    def answer(self, question: str, k: int = config.TOP_K) -> Answer:
-        """Retrieve top-`k` chunks, drop weak matches, generate a grounded answer, cite."""
+    def answer(
+        self,
+        question: str,
+        history: Optional[Sequence[Turn]] = None,
+        mode: str | None = None,
+        k: int = config.TOP_K,
+    ) -> Answer:
+        """Retrieve top-`k` chunks, drop weak matches, generate a grounded answer, cite.
+
+        `history` is prior (question, answer) turns for follow-up continuity; `mode` is
+        "short" or "explain" (falls back to the configured default).
+        """
         start = time.perf_counter()
+        mode = mode or config.DEFAULT_MODE
         question = (question or "").strip()
         if not question:
             return Answer(
                 question=question,
                 answer=config.REFUSAL_TEXT,
                 elapsed_s=time.perf_counter() - start,
+                mode=mode,
             )
 
-        retrieved = self.retriever.retrieve(question, k=k)
+        retrieved = self.retriever.retrieve(_retrieval_query(question, history), k=k)
         # Keep only chunks that clear the similarity floor; feed just those to the model.
         relevant = [c for c in retrieved if c.score >= config.MIN_SCORE]
-        text = generate.generate_answer(question, relevant, chat_fn=self._chat_fn).strip()
+        text = generate.generate_answer(
+            question, relevant, history=history, mode=mode, chat_fn=self._chat_fn
+        ).strip()
 
         if text == config.REFUSAL_TEXT or not relevant:
             sources: List[str] = []
@@ -100,6 +145,7 @@ class Pipeline:
             sources=sources,
             chunks=retrieved,  # show every retrieved chunk (with scores) for transparency
             elapsed_s=time.perf_counter() - start,
+            mode=mode,
         )
 
 
@@ -114,6 +160,11 @@ def get_pipeline() -> Pipeline:
     return _default_pipeline
 
 
-def answer_query(question: str, k: int = config.TOP_K) -> Answer:
+def answer_query(
+    question: str,
+    history: Optional[Sequence[Turn]] = None,
+    mode: str | None = None,
+    k: int = config.TOP_K,
+) -> Answer:
     """Convenience wrapper over the cached pipeline (spec §4 entry point)."""
-    return get_pipeline().answer(question, k=k)
+    return get_pipeline().answer(question, history=history, mode=mode, k=k)

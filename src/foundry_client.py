@@ -216,7 +216,7 @@ def embed_query(text: str) -> np.ndarray:
     return np.asarray(resp.data[0].embedding, dtype=np.float32)
 
 
-def chat(messages: List[dict]) -> str:
+def chat(messages: List[dict], max_tokens: int | None = None) -> str:
     """Run a grounded chat completion on the Intel iGPU and return the answer text."""
     client = get_client()
     resp = _call(
@@ -224,7 +224,7 @@ def chat(messages: List[dict]) -> str:
             model=config.CHAT_MODEL_ID,
             messages=messages,
             temperature=config.TEMPERATURE,
-            max_tokens=config.MAX_ANSWER_TOKENS,
+            max_tokens=max_tokens or config.MAX_ANSWER_TOKENS,
         ),
         config.CHAT_MODEL_ID,
     )
