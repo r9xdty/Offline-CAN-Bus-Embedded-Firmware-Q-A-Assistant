@@ -30,11 +30,18 @@ DB_PATH = Path(os.environ.get("RAG_DB_PATH", DATA_DIR / "kb.sqlite"))
 APP_NAME = "rag-can-assistant"
 
 # Chat / generation — Intel iGPU (OpenVINO), shared RAM. Chosen after testing: refuses
-# out-of-context questions correctly, stays concise, fast on the iGPU.
-CHAT_MODEL_ID = "phi-4-mini-instruct-openvino-gpu"
+# out-of-context questions correctly, stays concise. Its first load compiles the model on the
+# iGPU and can be slow; to use the fast cached NVIDIA/TensorRT model instead, override without
+# editing code:  setx RAG_CHAT_MODEL phi-3.5-mini-instruct-trtrtx-gpu
+CHAT_MODEL_ID = os.environ.get("RAG_CHAT_MODEL", "phi-4-mini-instruct-openvino-gpu").strip()
 
-# Embedding — NVIDIA RTX 3050 Ti (CUDA). Move to "...-generic-cpu" only if VRAM gets tight.
-EMBED_MODEL_ID = "qwen3-embedding-0.6b-cuda-gpu"
+# Embedding — NVIDIA RTX 3050 Ti (CUDA). Override with RAG_EMBED_MODEL (e.g. "...-generic-cpu").
+EMBED_MODEL_ID = os.environ.get("RAG_EMBED_MODEL", "qwen3-embedding-0.6b-cuda-gpu").strip()
+
+# Timeout (seconds) for requests to the Foundry server. Generous by default because the first
+# iGPU/OpenVINO chat load compiles the model; bounded so a genuine hang surfaces as an error
+# instead of freezing forever. Override with RAG_REQUEST_TIMEOUT.
+REQUEST_TIMEOUT = float(os.environ.get("RAG_REQUEST_TIMEOUT", "300"))
 
 # Foundry Local server endpoint. We talk to the running `foundry server` over its
 # OpenAI-compatible HTTP endpoint (the in-process SDK core does not share the daemon's model

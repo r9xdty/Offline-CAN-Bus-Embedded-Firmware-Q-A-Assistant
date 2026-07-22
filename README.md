@@ -251,10 +251,18 @@ python -m pytest tests/test_pipeline.py -q
   foundry model load phi-4-mini-instruct-openvino-gpu
   ```
 
-- **First chat is very slow (tens of seconds or more).** OpenVINO compiles the model on first
-  load. If `phi-4-mini` on the iGPU stays too slow for you, switch `CHAT_MODEL_ID` in
-  `src/config.py` to the cached NVIDIA/TensorRT fallback `phi-3.5-mini-instruct-trtrtx-gpu`
-  (fast; rely on the strict system prompt for refusals).
+- **First chat hangs / freezes (tens of seconds to minutes), or times out.** OpenVINO compiles
+  `phi-4-mini` on the iGPU on first load, which can be very slow. The CLI now warms the model up
+  at startup (with a message) and every server request has a bounded timeout, so it errors with
+  guidance instead of freezing forever. If it stays too slow, switch to the fast cached
+  NVIDIA/TensorRT model — no code edit needed, just an env var (then reopen the terminal):
+
+  ```powershell
+  setx RAG_CHAT_MODEL phi-3.5-mini-instruct-trtrtx-gpu
+  ```
+
+  Related overrides: `RAG_EMBED_MODEL`, and `RAG_REQUEST_TIMEOUT` (seconds; default 300) to wait
+  longer for a slow first compile.
 
 ## Design decisions
 
