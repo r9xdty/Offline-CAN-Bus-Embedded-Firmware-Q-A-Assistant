@@ -68,6 +68,8 @@ def _discover_endpoint() -> str:
                 [exe, "server", "status"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",  # foundry output isn't the console code page (cp1254 etc.)
                 timeout=20,
             ).stdout
             match = re.search(r"https?://[\w.]+:\d+", out or "")
@@ -124,10 +126,13 @@ def _ensure_loaded(model_id: str) -> None:
     if exe:
         for target in (model_id, _alias_of(model_id)):
             try:
+                # Discard output as raw bytes: we only need the exit code, and the CLI's
+                # progress bars aren't the console code page (cp1254 etc.), so decoding them
+                # in subprocess reader threads would raise UnicodeDecodeError.
                 result = subprocess.run(
                     [exe, "model", "load", target],
-                    capture_output=True,
-                    text=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     timeout=600,
                 )
                 if result.returncode == 0:

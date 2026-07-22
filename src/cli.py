@@ -62,6 +62,7 @@ def run(debug: bool = False) -> None:
     except Exception as exc:  # noqa: BLE001 - non-fatal; the first query will surface details
         print(f"  (warm-up skipped: {exc})", file=sys.stderr)
 
+    print(f"Chat model: {config.CHAT_MODEL_ID}  ·  Embedding: {config.EMBED_MODEL_ID}")
     print(f"Ready — {pipeline.size} chunks indexed. Ask a CAN-bus / firmware question.\n")
 
     while True:

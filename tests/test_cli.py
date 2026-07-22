@@ -49,6 +49,7 @@ def test_quit_prints_a_goodbye_message(monkeypatch):
     with redirect_stdout(buf):
         cli.run(debug=False)
     out = buf.getvalue()
+    assert "Chat model:" in out  # the active model is shown at startup
     assert any(msg in out for msg in cli.GOODBYE_MESSAGES)  # the fixed goodbye line ran
 
 
