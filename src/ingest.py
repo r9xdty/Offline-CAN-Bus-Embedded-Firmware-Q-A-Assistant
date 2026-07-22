@@ -145,6 +145,14 @@ CREATE INDEX IF NOT EXISTS idx_source ON chunks(source);
 """
 
 
+def _rows_for(records: Sequence[ChunkRecord], embeddings: np.ndarray):
+    """Build INSERT rows, L2-normalizing each embedding so similarity is a dot product."""
+    return [
+        (source, chunk_index, content, vectors.to_blob(vectors.l2_normalize(embeddings[i])))
+        for i, (source, chunk_index, content) in enumerate(records)
+    ]
+
+
 def write_chunks(
     db_path: Path,
     records: Sequence[ChunkRecord],
@@ -152,8 +160,7 @@ def write_chunks(
 ) -> int:
     """(Re)build the SQLite KB from records + their embeddings. Idempotent.
 
-    `embeddings` are L2-normalized here before storage so query-time similarity is a dot
-    product. Returns the number of chunks written.
+    Clears the whole table and repopulates it. Returns the number of chunks written.
     """
     if len(records) != len(embeddings):
         raise ValueError(
@@ -165,23 +172,80 @@ def write_chunks(
         conn.executescript(_SCHEMA)
         # Idempotent rebuild: clear and repopulate in one transaction.
         conn.execute("DELETE FROM chunks")
-        rows = [
-            (
-                source,
-                chunk_index,
-                content,
-                vectors.to_blob(vectors.l2_normalize(embeddings[i])),
-            )
-            for i, (source, chunk_index, content) in enumerate(records)
-        ]
         conn.executemany(
             "INSERT INTO chunks (source, chunk_index, content, embedding) VALUES (?, ?, ?, ?)",
-            rows,
+            _rows_for(records, embeddings),
         )
         conn.commit()
     finally:
         conn.close()
-    return len(rows)
+    return len(records)
+
+
+def add_document(
+    source: str,
+    text: str,
+    db_path: Path = config.DB_PATH,
+    embed_fn: Callable[[List[str]], np.ndarray] | None = None,
+) -> int:
+    """Chunk, embed, and upsert one document into the KB **without wiping the rest**.
+
+    Rows for an existing `source` are replaced (idempotent re-upload). Used by the Streamlit
+    uploader to add PDFs/notes on top of the existing corpus. Returns the chunk count added.
+    """
+    embed = embed_fn or _default_embed
+    chunks = chunk_text(text)
+    if not chunks:
+        return 0
+    embeddings = np.asarray(embed(chunks), dtype=np.float32)
+    records: List[ChunkRecord] = [(source, i, content) for i, content in enumerate(chunks)]
+
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(_SCHEMA)
+        conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
+        conn.executemany(
+            "INSERT INTO chunks (source, chunk_index, content, embedding) VALUES (?, ?, ?, ?)",
+            _rows_for(records, embeddings),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(records)
+
+
+def list_sources(db_path: Path = config.DB_PATH) -> List[Tuple[str, int]]:
+    """Return [(source, chunk_count)] for everything in the KB (empty if not built yet)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'"
+        ).fetchone()
+        if not exists:
+            return []
+        return conn.execute(
+            "SELECT source, COUNT(*) FROM chunks GROUP BY source ORDER BY source"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def remove_source(source: str, db_path: Path = config.DB_PATH) -> int:
+    """Delete all chunks for `source`. Returns the number of rows removed."""
+    conn = sqlite3.connect(db_path)
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'"
+        ).fetchone()
+        if not exists:
+            return 0
+        cur = conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- #
