@@ -48,12 +48,13 @@ def run(debug: bool = False) -> None:
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if not question or question.lower() in {"quit", "exit"}:
+        if not question or question.lower() in {"quit", "exit", "bye", "q", "hadi sg", "thank you for your services", "thank you for your soul"}:
             break
         result = pipeline.answer(question)
         _print_answer(result, debug)
 
-    print("Bye.")
+    goodbye_messages = ["Bye", "hadi sende sg", "Adamsin Quershma", "Gorusuruz knk", "babays"]
+    print(goodbye_messages(randomize()))
 
 
 def main() -> None:
