@@ -2,11 +2,16 @@
 
 The `Pipeline` object loads the KB and (lazily) the Foundry models once, then reuses them for
 every query so answers stay fast. `answer_query` is a module-level convenience wrapper.
+
+Retrieved chunks below `config.MIN_SCORE` are dropped before generation: an off-topic question
+then reaches the model with no context (or none at all), yielding a clean, deterministic
+refusal instead of relying solely on the LLM to notice weak, semi-relevant chunks.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -15,7 +20,8 @@ from . import config
 from . import generate
 from .retrieve import RetrievedChunk, Retriever
 
-_CITATION = re.compile(r"\[([^\[\]]+?\.(?:md|txt))\]", re.IGNORECASE)
+# Citations look like [source_name.ext]; match the extensions we actually ingest.
+_CITATION = re.compile(r"\[([^\[\]]+?\.(?:md|markdown|txt|pdf))\]", re.IGNORECASE)
 
 
 @dataclass
@@ -26,10 +32,16 @@ class Answer:
     answer: str
     sources: List[str] = field(default_factory=list)
     chunks: List[RetrievedChunk] = field(default_factory=list)
+    elapsed_s: float = 0.0
 
     @property
     def is_refusal(self) -> bool:
         return self.answer.strip() == config.REFUSAL_TEXT
+
+    @property
+    def top_score(self) -> Optional[float]:
+        """Highest similarity among the retrieved chunks (None if nothing retrieved)."""
+        return max((c.score for c in self.chunks), default=None)
 
 
 def _unique(seq: List[str]) -> List[str]:
@@ -59,23 +71,36 @@ class Pipeline:
         return self.retriever.size
 
     def answer(self, question: str, k: int = config.TOP_K) -> Answer:
-        """Retrieve top-`k` chunks, generate a grounded answer, and attach sources."""
+        """Retrieve top-`k` chunks, drop weak matches, generate a grounded answer, cite."""
+        start = time.perf_counter()
         question = (question or "").strip()
         if not question:
-            return Answer(question=question, answer=config.REFUSAL_TEXT)
+            return Answer(
+                question=question,
+                answer=config.REFUSAL_TEXT,
+                elapsed_s=time.perf_counter() - start,
+            )
 
-        chunks = self.retriever.retrieve(question, k=k)
-        text = generate.generate_answer(question, chunks, chat_fn=self._chat_fn)
+        retrieved = self.retriever.retrieve(question, k=k)
+        # Keep only chunks that clear the similarity floor; feed just those to the model.
+        relevant = [c for c in retrieved if c.score >= config.MIN_SCORE]
+        text = generate.generate_answer(question, relevant, chat_fn=self._chat_fn).strip()
 
-        if text.strip() == config.REFUSAL_TEXT or not chunks:
+        if text == config.REFUSAL_TEXT or not relevant:
             sources: List[str] = []
         else:
-            # Prefer sources the model actually cited; fall back to all retrieved sources.
+            # Prefer sources the model actually cited; fall back to the chunks we used.
             cited = _unique(re.findall(_CITATION, text))
-            retrieved = _unique([c.source for c in chunks])
-            sources = [s for s in retrieved if s in cited] or retrieved
+            used = _unique([c.source for c in relevant])
+            sources = [s for s in used if s in cited] or used
 
-        return Answer(question=question, answer=text.strip(), sources=sources, chunks=chunks)
+        return Answer(
+            question=question,
+            answer=text,
+            sources=sources,
+            chunks=retrieved,  # show every retrieved chunk (with scores) for transparency
+            elapsed_s=time.perf_counter() - start,
+        )
 
 
 _default_pipeline: Optional[Pipeline] = None

@@ -63,6 +63,12 @@ CHUNK_OVERLAP_CHARS = 100
 # --------------------------------------------------------------------------- #
 TOP_K = 3
 
+# Minimum cosine similarity for a retrieved chunk to be fed to the model. Chunks below this
+# are dropped, so an off-topic question reaches the model with no context -> a clean refusal
+# instead of a guess over weak matches. Conservative default; watch scores with `--debug` and
+# raise it (e.g. 0.25-0.35) for stricter refusals, or set 0 to disable. Override: RAG_MIN_SCORE.
+MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.1"))
+
 # Keep the whole prompt inside the 4K context budget (spec §2, §8.2).
 CONTEXT_TOKEN_LIMIT = 4096
 MAX_ANSWER_TOKENS = 512

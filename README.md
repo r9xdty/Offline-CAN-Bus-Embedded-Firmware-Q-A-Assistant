@@ -131,11 +131,16 @@ Type `quit` or submit an empty line to exit. Example session:
 Q> What is the maximum CAN bus length at 500 kbps?
 About 100 meters at 500 kbit/s. [can_2_0_basics.md]
 Sources: ['can_2_0_basics.md']
+(2.3s · top match 0.71)
 
 Q> What's the WiFi setup procedure?
 I don't have that information in the provided documents.
 Sources: []
+(0.1s · top match 0.09)
 ```
+
+Each answer shows how long it took and the best retrieval score, so you can see when a match
+is weak (and why an off-topic question was refused). See **Tuning retrieval** below.
 
 ### Streamlit
 
@@ -210,8 +215,25 @@ deterministic test suite that injects fake embed/chat functions. It runs anywher
 
 ```bash
 pip install pytest
-python -m pytest tests/test_pipeline.py -q
+python -m pytest tests/ -q          # 41 tests
 ```
+
+These run in CI too — `.github/workflows/ci.yml` runs the whole suite on every push and pull
+request (only `numpy` + `pytest` needed, no GPU/runtime).
+
+### Tuning retrieval
+
+Retrieved chunks below `MIN_SCORE` (cosine similarity) are dropped before generation, so an
+off-topic question reaches the model with no context and gets a clean, deterministic refusal
+instead of a guess over weak matches. Watch the `top match` score printed with each answer (or
+the per-chunk scores under `--debug`):
+
+- If off-topic questions still get answered, **raise** the floor:
+  `setx RAG_MIN_SCORE 0.3` (typical strict range 0.25–0.35).
+- If legitimate questions get wrongly refused, **lower** it (e.g. `0.05`, or `0` to disable).
+
+The default is a conservative `0.1`. Also tunable: `RAG_CHAT_MODEL`, `RAG_EMBED_MODEL`,
+`RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`, `RAG_DB_PATH`.
 
 ---
 
@@ -310,6 +332,7 @@ integration changes.
 ```
 ├─ README.md
 ├─ requirements.txt
+├─ .github/workflows/ci.yml   # runs the offline test suite on push / PR
 ├─ data/
 │  ├─ raw/                 # source documents (.md / .txt)
 │  └─ kb.sqlite            # generated: chunks + embeddings
@@ -328,7 +351,8 @@ integration changes.
    ├─ eval_set.jsonl       # answerable + unanswerable test questions
    ├─ run_eval.py          # eval runner (real pipeline)
    ├─ test_pipeline.py     # offline unit tests (fake embed/chat)
-   └─ test_documents.py    # offline tests: extraction + incremental upload
+   ├─ test_documents.py    # offline tests: extraction + incremental upload
+   └─ test_cli.py          # offline tests: CLI loop + client error mapping
 ```
 
 ---

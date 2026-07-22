@@ -129,6 +129,9 @@ def main() -> None:
         else:
             st.markdown("**Sources:** _(none — answer not grounded in the corpus)_")
 
+        top = f"{result.top_score:.2f}" if result.top_score is not None else "n/a"
+        st.caption(f"Answered in {result.elapsed_s:.1f}s · top match {top}")
+
         with st.expander("Retrieved chunks & similarity scores"):
             if not result.chunks:
                 st.write("No chunks retrieved.")

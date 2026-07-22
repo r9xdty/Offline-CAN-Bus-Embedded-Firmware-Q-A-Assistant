@@ -34,6 +34,8 @@ def _print_answer(result: Answer, debug: bool) -> None:
         print(f"Sources: {result.sources}")
     else:
         print("Sources: []")
+    top = f"{result.top_score:.2f}" if result.top_score is not None else "n/a"
+    print(f"({result.elapsed_s:.1f}s · top match {top})")
     if debug:
         print("\n--- retrieved chunks ---")
         if not result.chunks:

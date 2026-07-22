@@ -18,6 +18,8 @@ class _FakeAnswer:
     answer = "The maximum length at 500 kbps is about 100 m. [can_2_0_basics.md]"
     sources = ["can_2_0_basics.md"]
     chunks: list = []
+    elapsed_s = 0.5
+    top_score = 0.72
 
 
 class _FakePipeline:

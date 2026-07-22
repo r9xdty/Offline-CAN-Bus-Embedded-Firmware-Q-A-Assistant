@@ -253,6 +253,45 @@ def test_pipeline_refusal_string_clears_sources(tmp_path: Path):
     assert ans.sources == []
 
 
+def test_similarity_threshold_refuses_without_calling_the_model(tmp_path, monkeypatch):
+    def chat_must_not_run(messages):
+        raise AssertionError("chat must not run when every chunk is below the score floor")
+
+    pipe = _pipeline_with(tmp_path, chat_must_not_run)
+    # A cosine floor above 1.0 filters everything -> deterministic refusal, no model call.
+    monkeypatch.setattr(config, "MIN_SCORE", 2.0)
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.is_refusal
+    assert ans.sources == []
+    assert ans.chunks  # retrieved chunks are still surfaced (below-threshold) for transparency
+
+
+def test_answer_reports_latency_and_top_score(tmp_path):
+    pipe = _pipeline_with(tmp_path, lambda m: "About 100 meters. [length_doc.md]")
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.elapsed_s >= 0.0
+    assert ans.top_score is not None and ans.top_score > 0
+
+
+def test_pdf_citation_is_recognized(tmp_path):
+    db = tmp_path / "kb.sqlite"
+    # A PDF uploaded via the UI is stored by add_document with a .pdf source label.
+    ingest.add_document(
+        "datasheet.pdf",
+        "length length length CAN bus length at 500 kbps 100 meters",
+        db,
+        bow_embed,
+    )
+
+    pipe = Pipeline(
+        db_path=db,
+        embed_query_fn=bow_embed_query,
+        chat_fn=lambda m: "About 100 meters. [datasheet.pdf]",
+    )
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.sources == ["datasheet.pdf"]  # .pdf citation is now parsed
+
+
 # --------------------------------------------------------------------------- #
 # Eval harness grading logic
 # --------------------------------------------------------------------------- #
