@@ -1,0 +1,17 @@
+{"question": "What is the maximum CAN bus length at 500 kbps?", "expected_behavior": "answer", "must_include_any": ["100 m", "100 meter", "100meter", "100m"], "expect_source": "can_2_0_basics.md"}
+{"question": "What is the difference between standard (11-bit) and extended (29-bit) CAN identifiers?", "expected_behavior": "answer", "must_include_any": ["29", "extended", "standard"], "expect_source": "can_2_0_basics.md"}
+{"question": "How does bus arbitration decide which CAN message wins?", "expected_behavior": "answer", "must_include_any": ["lowest identifier", "dominant", "priority"], "expect_source": "can_2_0_basics.md"}
+{"question": "What is the maximum payload size of a CAN FD frame?", "expected_behavior": "answer", "must_include_any": ["64"], "expect_source": "can_fd_basics.md"}
+{"question": "What does the BRS bit do in a CAN FD frame?", "expected_behavior": "answer", "must_include_any": ["bit rate", "data rate", "faster", "data phase"], "expect_source": "can_fd_basics.md"}
+{"question": "What does a passive-error state mean in the CAN error-confinement mechanism?", "expected_behavior": "answer", "must_include_any": ["recessive", "127", "passive error flag"], "expect_source": "can_error_handling.md"}
+{"question": "When does a CAN node enter the bus-off state?", "expected_behavior": "answer", "must_include_any": ["255", "exceeds 255", "transmit error counter"], "expect_source": "can_error_handling.md"}
+{"question": "Which two error counters does a CAN node maintain?", "expected_behavior": "answer", "must_include_any": ["tec", "rec", "transmit error counter", "receive error counter"], "expect_source": "can_error_handling.md"}
+{"question": "How is the nominal CAN bit time divided into segments on STM32 bxCAN?", "expected_behavior": "answer", "must_include_any": ["sync_seg", "bs1", "bs2", "tseg", "sample point"], "expect_source": "stm32_bxcan_bit_timing.md"}
+{"question": "What does the Synchronization Jump Width (SJW) configure?", "expected_behavior": "answer", "must_include_any": ["resynchron", "jump", "drift", "1 to 4"], "expect_source": "stm32_bxcan_bit_timing.md"}
+{"question": "What identifier length does SAE J1939 use?", "expected_behavior": "answer", "must_include_any": ["29", "extended"], "expect_source": "j1939_overview.md"}
+{"question": "What is a PGN in J1939?", "expected_behavior": "answer", "must_include_any": ["parameter group", "pgn"], "expect_source": "j1939_overview.md"}
+{"question": "What is the difference between PDOs and SDOs in CANopen?", "expected_behavior": "answer", "must_include_any": ["process data", "service data", "real-time", "handshake"], "expect_source": "canopen_overview.md"}
+{"question": "What termination resistor value should a high-speed CAN bus use?", "expected_behavior": "answer", "must_include_any": ["120", "120-ohm", "120 ohm"], "expect_source": "can_transceiver_basics.md"}
+{"question": "What is the WiFi setup procedure for this board?", "expected_behavior": "refuse"}
+{"question": "How do I configure Bluetooth pairing on this microcontroller?", "expected_behavior": "refuse"}
+{"question": "What is the retail price of an STM32 development kit?", "expected_behavior": "refuse"}

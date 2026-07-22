@@ -1,0 +1,16 @@
+# Generated knowledge base (rebuild with `python -m src.ingest`)
+data/kb.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

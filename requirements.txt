@@ -1,0 +1,18 @@
+# Core runtime dependencies for the offline CAN-bus / firmware RAG assistant.
+#
+# Foundry Local SDK: the WinML build is recommended on Windows for hardware acceleration
+# (Intel iGPU via OpenVINO + NVIDIA via CUDA); the cross-platform build is used elsewhere.
+foundry-local-sdk-winml>=1.0 ; platform_system == "Windows"
+foundry-local-sdk>=1.0 ; platform_system != "Windows"
+
+# OpenAI-shaped request/response types are used by the Foundry chat/embedding clients.
+openai>=1.30
+
+# Cosine similarity + vector storage helpers.
+numpy>=1.24
+
+# Phase 2 web UI.
+streamlit>=1.30
+
+# Test/eval tooling (optional at runtime).
+pytest>=7.4

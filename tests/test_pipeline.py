@@ -1,0 +1,305 @@
+"""Offline unit tests for the RAG pipeline.
+
+These exercise every part that does NOT require the Foundry runtime — chunking, vector
+serialization, cosine search, the SQLite round-trip, prompt assembly, context fitting, the
+pipeline's refusal/citation logic, and the eval grader — by injecting deterministic fake
+embed/chat functions. They run on any machine with `pytest`, no GPU or models needed.
+
+The parts that genuinely need the local LLM (model-generated facts and out-of-corpus refusals)
+are covered by `tests/run_eval.py` against the real pipeline on the target machine.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Callable, List
+
+import numpy as np
+import pytest
+
+from src import config, generate, ingest, vectors
+from src.pipeline import Pipeline
+from src.retrieve import Retriever, RetrievedChunk, cosine_top_k
+from tests.run_eval import grade, run_eval, load_eval
+
+RAW_DIR = config.RAW_DIR
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic fake embedder: bag-of-words over a fixed vocabulary.
+# --------------------------------------------------------------------------- #
+VOCAB = ["length", "identifier", "error", "timing", "canopen", "j1939", "transceiver", "fd"]
+
+
+def _bow_vector(text: str) -> np.ndarray:
+    low = text.lower()
+    vec = np.array([low.count(w) for w in VOCAB], dtype=np.float32)
+    if not vec.any():
+        vec = vec + 1e-3  # avoid an all-zero vector so normalization is well-defined
+    return vec
+
+
+def bow_embed(texts: List[str]) -> np.ndarray:
+    return np.vstack([_bow_vector(t) for t in texts]).astype(np.float32)
+
+
+def bow_embed_query(text: str) -> np.ndarray:
+    return _bow_vector(text)
+
+
+# --------------------------------------------------------------------------- #
+# Chunking
+# --------------------------------------------------------------------------- #
+def test_chunk_text_respects_max_and_is_nonempty():
+    text = "\n\n".join(f"Paragraph {i}. " + "word " * 60 for i in range(8))
+    chunks = ingest.chunk_text(text, target=700, max_chars=800, overlap=100)
+    assert chunks, "expected at least one chunk"
+    for ch in chunks:
+        assert ch.strip(), "no whitespace-only chunks"
+        # Allow a little slack for the joined overlap carry, but stay near the max.
+        assert len(ch) <= 800 + 100
+
+
+def test_chunk_text_short_input_single_chunk():
+    chunks = ingest.chunk_text("A short note about CAN bus termination.")
+    assert chunks == ["A short note about CAN bus termination."]
+
+
+def test_chunk_text_has_overlap_between_consecutive_chunks():
+    # Build text long enough to force multiple chunks.
+    sentences = [f"Sentence number {i} about bit timing segments and quanta." for i in range(60)]
+    text = " ".join(sentences)
+    chunks = ingest.chunk_text(text, target=400, max_chars=500, overlap=80)
+    assert len(chunks) >= 2
+    # Some token from the tail of chunk n should reappear at the head of chunk n+1.
+    tail_words = set(chunks[0].split()[-6:])
+    head_words = set(chunks[1].split()[:12])
+    assert tail_words & head_words, "consecutive chunks should share overlap text"
+
+
+def test_real_corpus_chunks_are_reasonable():
+    records = ingest.build_records(RAW_DIR)
+    assert len(records) >= 10, "corpus should yield a healthy number of chunks"
+    sources = {src for (src, _, _) in records}
+    assert "can_2_0_basics.md" in sources
+    for _, _, content in records:
+        assert content.strip()
+        assert len(content) <= config.CHUNK_MAX_CHARS + config.CHUNK_OVERLAP_CHARS + 50
+
+
+# --------------------------------------------------------------------------- #
+# Vectors
+# --------------------------------------------------------------------------- #
+def test_l2_normalize_unit_norm():
+    v = np.array([3.0, 4.0], dtype=np.float32)
+    n = vectors.l2_normalize(v)
+    assert np.isclose(np.linalg.norm(n), 1.0)
+
+
+def test_blob_round_trip():
+    v = vectors.l2_normalize(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    back = vectors.from_blob(vectors.to_blob(v))
+    assert np.allclose(v, back)
+
+
+def test_zero_vector_normalize_is_safe():
+    z = np.zeros(4, dtype=np.float32)
+    assert np.allclose(vectors.l2_normalize(z), z)
+
+
+# --------------------------------------------------------------------------- #
+# Cosine search
+# --------------------------------------------------------------------------- #
+def test_cosine_top_k_orders_by_similarity():
+    matrix = np.array(
+        [
+            vectors.l2_normalize(np.array([1.0, 0.0, 0.0])),
+            vectors.l2_normalize(np.array([0.0, 1.0, 0.0])),
+            vectors.l2_normalize(np.array([0.9, 0.1, 0.0])),
+        ],
+        dtype=np.float32,
+    )
+    q = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    top = cosine_top_k(q, matrix, k=2)
+    assert [i for i, _ in top] == [0, 2]  # exact match first, then the near one
+    assert top[0][1] >= top[1][1]
+
+
+def test_cosine_top_k_empty_matrix():
+    assert cosine_top_k(np.array([1.0]), np.empty((0, 0), dtype=np.float32), k=3) == []
+
+
+# --------------------------------------------------------------------------- #
+# Ingest + retrieve round trip (fake embedder, real SQLite)
+# --------------------------------------------------------------------------- #
+def test_ingest_and_retrieve_round_trip(tmp_path: Path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "length_doc.md").write_text("CAN bus length depends on bit rate. length length length")
+    (raw / "timing_doc.md").write_text("Bit timing uses time quanta and segments. timing timing timing")
+    (raw / "error_doc.md").write_text("Error confinement uses counters. error error error")
+
+    db = tmp_path / "kb.sqlite"
+    count = ingest.ingest(raw_dir=raw, db_path=db, embed_fn=bow_embed)
+    assert count == 3
+
+    retriever = Retriever(db_path=db, embed_query_fn=bow_embed_query)
+    assert retriever.size == 3
+
+    hits = retriever.retrieve("tell me about bus timing", k=1)
+    assert hits[0].source == "timing_doc.md"
+
+    hits = retriever.retrieve("what about error handling", k=1)
+    assert hits[0].source == "error_doc.md"
+
+
+def test_retriever_handles_missing_kb_gracefully(tmp_path: Path):
+    # A DB file that was never ingested (no `chunks` table) should look like an empty KB.
+    db = tmp_path / "never_ingested.sqlite"
+    retriever = Retriever(db_path=db, embed_query_fn=bow_embed_query)
+    assert retriever.size == 0
+    assert retriever.retrieve("anything", k=3) == []
+
+
+def test_write_chunks_is_idempotent(tmp_path: Path):
+    db = tmp_path / "kb.sqlite"
+    records = [("a.md", 0, "length length"), ("b.md", 0, "timing timing")]
+    emb = bow_embed([c for _, _, c in records])
+    ingest.write_chunks(db, records, emb)
+    n2 = ingest.write_chunks(db, records, emb)  # rebuild
+    assert n2 == 2
+    retriever = Retriever(db_path=db, embed_query_fn=bow_embed_query)
+    assert retriever.size == 2  # not duplicated
+
+
+# --------------------------------------------------------------------------- #
+# Generation: prompt assembly + context fitting
+# --------------------------------------------------------------------------- #
+def _chunk(source: str, content: str, score: float = 0.9, idx: int = 0) -> RetrievedChunk:
+    return RetrievedChunk(id=idx, source=source, chunk_index=idx, content=content, score=score)
+
+
+def test_build_messages_structure():
+    chunks = [_chunk("can_fd_basics.md", "CAN FD supports up to 64 data bytes.")]
+    messages = generate.build_messages("How many bytes?", chunks)
+    assert messages[0]["role"] == "system"
+    assert config.REFUSAL_TEXT in messages[0]["content"]
+    user = messages[1]["content"]
+    assert "[can_fd_basics.md]" in user  # source label present for citation
+    assert "How many bytes?" in user
+    assert "CONTEXT:" in user and "USER:" in user
+
+
+def test_fit_context_truncates_to_budget():
+    big = "x" * 300
+    chunks = [_chunk(f"doc{i}.md", big, score=1.0 - i * 0.1, idx=i) for i in range(5)]
+    kept = generate.fit_context(chunks, char_budget=700)
+    assert 1 <= len(kept) < len(chunks)  # dropped the ones that don't fit
+    # Highest-scored chunks are kept first.
+    assert kept[0].source == "doc0.md"
+
+
+def test_generate_answer_refuses_without_chunks():
+    assert generate.generate_answer("anything", []) == config.REFUSAL_TEXT
+
+
+def test_generate_answer_uses_chat_fn():
+    chunks = [_chunk("can_2_0_basics.md", "Max length at 500 kbps is about 100 meters.")]
+
+    def fake_chat(messages: List[dict]) -> str:
+        # A grounded extractive stub that cites its source.
+        return "About 100 meters. [can_2_0_basics.md]"
+
+    out = generate.generate_answer("length at 500 kbps?", chunks, chat_fn=fake_chat)
+    assert "100 meters" in out
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline: refusal + citation logic
+# --------------------------------------------------------------------------- #
+def _pipeline_with(tmp_path: Path, chat_fn: Callable[[List[dict]], str]) -> Pipeline:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "length_doc.md").write_text("CAN bus length at 500 kbps is about 100 meters. length length")
+    (raw / "timing_doc.md").write_text("Bit timing uses SYNC_SEG BS1 BS2. timing timing")
+    db = tmp_path / "kb.sqlite"
+    ingest.ingest(raw_dir=raw, db_path=db, embed_fn=bow_embed)
+    return Pipeline(db_path=db, embed_query_fn=bow_embed_query, chat_fn=chat_fn)
+
+
+def test_pipeline_empty_question_refuses(tmp_path: Path):
+    pipe = _pipeline_with(tmp_path, lambda m: "should not be called")
+    ans = pipe.answer("   ")
+    assert ans.is_refusal
+    assert ans.sources == []
+
+
+def test_pipeline_grounded_answer_has_sources(tmp_path: Path):
+    def chat(messages: List[dict]) -> str:
+        return "The maximum length is about 100 meters. [length_doc.md]"
+
+    pipe = _pipeline_with(tmp_path, chat)
+    ans = pipe.answer("length at 500 kbps")
+    assert not ans.is_refusal
+    assert "length_doc.md" in ans.sources
+    assert ans.chunks and ans.chunks[0].source == "length_doc.md"
+
+
+def test_pipeline_refusal_string_clears_sources(tmp_path: Path):
+    pipe = _pipeline_with(tmp_path, lambda m: config.REFUSAL_TEXT)
+    ans = pipe.answer("something the model cannot answer")
+    assert ans.is_refusal
+    assert ans.sources == []
+
+
+# --------------------------------------------------------------------------- #
+# Eval harness grading logic
+# --------------------------------------------------------------------------- #
+def test_grade_refusal_pass_and_fail():
+    item = {"expected_behavior": "refuse"}
+    ok, _ = grade(item, config.REFUSAL_TEXT, [])
+    assert ok
+    ok, _ = grade(item, "Here is a made-up answer.", [])
+    assert not ok
+
+
+def test_grade_answer_keyword_match():
+    item = {"expected_behavior": "answer", "must_include_any": ["100"], "expect_source": "d.md"}
+    ok, _ = grade(item, "about 100 meters", ["d.md"])
+    assert ok
+    ok, _ = grade(item, "no number here", ["d.md"])
+    assert not ok
+    ok, _ = grade(item, config.REFUSAL_TEXT, [])
+    assert not ok  # refusing an answerable question fails
+
+
+def test_eval_set_is_wellformed():
+    items = load_eval()
+    assert len(items) >= 10
+    for it in items:
+        assert it["expected_behavior"] in {"answer", "refuse"}
+        if it["expected_behavior"] == "answer":
+            assert it.get("must_include_any"), it["question"]
+
+
+def test_run_eval_with_fake_answerer():
+    """Drive the full eval harness with a stub answerer to prove scoring end-to-end."""
+    items = load_eval()
+
+    class _Ans:
+        def __init__(self, answer, sources):
+            self.answer = answer
+            self.sources = sources
+
+    def fake_answer(question: str) -> _Ans:
+        # Find the matching eval item and produce a trivially-passing answer.
+        item = next(i for i in items if i["question"] == question)
+        if item["expected_behavior"] == "refuse":
+            return _Ans(config.REFUSAL_TEXT, [])
+        needle = item["must_include_any"][0]
+        src = item.get("expect_source", "")
+        return _Ans(f"Grounded answer containing {needle}. [{src}]", [src] if src else [])
+
+    report = run_eval(answer_fn=fake_answer, items=items)
+    assert report["passed"] == report["total"]
