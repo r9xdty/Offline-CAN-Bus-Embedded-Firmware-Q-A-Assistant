@@ -57,33 +57,82 @@ _clients: _Clients | None = None
 _lock = threading.Lock()
 
 
-def _resolve_model(catalog: Any, model_id: str) -> Any:
-    """Return the exact model variant for `model_id`, falling back to alias lookup.
+def _norm(model_id: Any) -> str:
+    """Normalize a model id for comparison: lowercase, drop any ':version' suffix."""
+    return str(model_id).lower().split(":", 1)[0]
 
-    Pinning the full variant ID keeps device placement deterministic; if the catalog has
-    shifted and the exact variant is missing, fall back to the alias (its leading segment).
+
+def _alias_of(model_id: str) -> str:
+    """Derive the catalog alias (e.g. 'phi-4-mini') from a full variant id."""
+    alias = model_id
+    for suffix in ("-openvino-gpu", "-cuda-gpu", "-trtrtx-gpu", "-generic-gpu", "-generic-cpu"):
+        if alias.endswith(suffix):
+            alias = alias[: -len(suffix)]
+            break
+    if alias.endswith("-instruct"):
+        alias = alias[: -len("-instruct")]
+    return alias
+
+
+def _match(models: Any, target: str) -> Any:
+    """Return a model or nested variant whose normalized id equals `target`, else None."""
+    for m in models or []:
+        if _norm(getattr(m, "id", "")) == target:
+            return m
+        for v in getattr(m, "variants", None) or []:
+            if _norm(getattr(v, "id", "")) == target:
+                return v
+    return None
+
+
+def _resolve_model(catalog: Any, model_id: str) -> Any:
+    """Return the exact model variant for `model_id`, trying every catalog view.
+
+    On-device GPU variants (OpenVINO / CUDA / TensorRT) are surfaced by ``get_cached_models``
+    and each model's ``.variants`` — NOT by ``get_model_variant``/``list_models``, which only
+    expose the remote ``*-generic-cpu`` catalog. So we search the cached models and variant
+    lists too, and pin the exact variant so device placement stays deterministic.
     """
-    model = catalog.get_model_variant(model_id)
-    if model is None:
-        # Best-effort alias: strip the trailing device/EP qualifier tokens.
-        alias = model_id
-        for suffix in (
-            "-openvino-gpu",
-            "-cuda-gpu",
-            "-generic-cpu",
-            "-trtrtx-gpu",
-            "-generic-gpu",
-        ):
-            if alias.endswith(suffix):
-                alias = alias[: -len(suffix)]
-                break
-        model = catalog.get_model(alias)
-    if model is None:
-        raise RuntimeError(
-            f"Model '{model_id}' not found in the Foundry Local catalog. "
-            "Run `foundry model list --variants` to see available/cached models."
-        )
-    return model
+    target = _norm(model_id)
+
+    # 1) Exact variant lookup against the remote catalog.
+    try:
+        model = catalog.get_model_variant(model_id)
+        if model is not None:
+            return model
+    except Exception:
+        pass
+
+    # 2) Among the models actually cached on this machine (where GPU variants live).
+    for source in (catalog.get_cached_models, catalog.list_models):
+        try:
+            found = _match(source(), target)
+            if found is not None:
+                return found
+        except Exception:
+            pass
+
+    # 3) By alias, then match the requested variant among the model's variants.
+    try:
+        parent = catalog.get_model(_alias_of(model_id))
+        if parent is not None:
+            found = _match([parent], target)
+            if found is not None:
+                return found
+    except Exception:
+        pass
+
+    # Failure: surface what the SDK can actually see so the fix is obvious.
+    try:
+        cached = [getattr(m, "id", "?") for m in catalog.get_cached_models()]
+    except Exception:
+        cached = []
+    raise RuntimeError(
+        f"Model '{model_id}' not found via the Foundry Local SDK.\n"
+        f"Cached models the SDK reports: {cached or '(none)'}\n"
+        "Confirm with `foundry model list --variants`; if the ID differs, update "
+        "CHAT_MODEL_ID / EMBED_MODEL_ID in src/config.py."
+    )
 
 
 def _prepare(model: Any) -> None:

@@ -178,6 +178,35 @@ python -m pytest tests/test_pipeline.py -q
 
 ---
 
+## Troubleshooting (Windows)
+
+- **`foundry server start` times out / `foundry server status` says "Not running" but shows a
+  PID and Web URL.** The daemon is owned by a different session's integrity level. Run the
+  Foundry server **and** the Python app from the **same terminal** — if you started Foundry
+  from an elevated (Administrator) shell, run `python -m src.ingest` / `src.cli` there too. A
+  per-user named pipe backs the daemon, so a non-elevated shell can't control a daemon started
+  elevated (and vice-versa). If a stale daemon is stuck, clear it and restart:
+
+  ```powershell
+  foundry server stop
+  Get-Process -Name foundrylocald -ErrorAction SilentlyContinue | Stop-Process -Force
+  foundry server start
+  foundry server status
+  ```
+
+- **`Model '...-openvino-gpu' not found`, yet `foundry model list --variants` shows it cached.**
+  The SDK's `get_model_variant()` / `list_models()` only expose the remote `*-generic-cpu`
+  catalog; on-device GPU variants (OpenVINO / CUDA / TensorRT) are surfaced by
+  `get_cached_models()` and each model's `.variants`. `src/foundry_client.py` searches all of
+  those, so the pinned GPU IDs resolve. If you still see the error, its message now lists the
+  cached IDs the SDK reports — update `CHAT_MODEL_ID` / `EMBED_MODEL_ID` in `src/config.py` to
+  match.
+
+- **First chat is very slow (tens of seconds or more).** OpenVINO compiles the model on first
+  load. If `phi-4-mini` on the iGPU stays too slow for you, switch `CHAT_MODEL_ID` in
+  `src/config.py` to the cached NVIDIA/TensorRT fallback `phi-3.5-mini-instruct-trtrtx-gpu`
+  (fast; rely on the strict system prompt for refusals).
+
 ## Design decisions
 
 - **SQLite + brute-force cosine, no vector DB.** For a corpus of dozens–low-hundreds of
