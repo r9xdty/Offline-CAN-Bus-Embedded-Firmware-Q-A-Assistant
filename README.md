@@ -143,8 +143,24 @@ Sources: []
 streamlit run app_streamlit.py
 ```
 
-A text box, a submit button, the grounded answer with its sources, and an expander showing the
-retrieved chunks + scores. The Foundry client and KB are cached, so each query is fast.
+The main pane has a text box, a submit button, the grounded answer with its sources, and an
+expander showing the retrieved chunks + scores. The Foundry client and KB are cached, so each
+query is fast.
+
+**Upload documents (sidebar).** Drop embedded-systems **PDF / Markdown / text** files into the
+uploader and click *Add to knowledge base*. Each file's text is extracted (PDFs are converted
+and reflowed automatically), chunked, embedded on the NVIDIA GPU, and added to the same SQLite
+KB — then you can ask questions over it with citations. The sidebar also lists every indexed
+document with its chunk count and a ✕ to remove it.
+
+- Uploads **add on top** of the existing corpus (re-uploading the same filename replaces it,
+  idempotently) and are stored in `data/kb.sqlite`, so they persist across restarts.
+- The Foundry Local **server must be running** to upload (it embeds the new chunks).
+- Note: a full `python -m src.ingest` rebuild repopulates the KB from `data/raw/` only, so it
+  drops UI-uploaded documents. To keep a document permanently, also place its text file in
+  `data/raw/`.
+- Scanned/image-only PDFs (no text layer) can't be extracted — the UI warns you (OCR is out of
+  scope).
 
 ---
 
@@ -290,19 +306,21 @@ integration changes.
 │  ├─ raw/                 # source documents (.md / .txt)
 │  └─ kb.sqlite            # generated: chunks + embeddings
 ├─ src/
-│  ├─ config.py            # model IDs, chunk params, top_k, ctx limit, prompt, paths
-│  ├─ foundry_client.py    # Foundry Local: chat client (iGPU) + embed client (NVIDIA)
+│  ├─ config.py            # model IDs, endpoint, chunk params, top_k, ctx limit, prompt, paths
+│  ├─ foundry_client.py    # Foundry Local server (HTTP): chat (iGPU) + embeddings (NVIDIA)
 │  ├─ vectors.py           # L2 normalize + float32 blob (de)serialization
-│  ├─ ingest.py            # read docs → chunk → embed → write SQLite
+│  ├─ documents.py         # extract text from uploaded PDF / Markdown / text files
+│  ├─ ingest.py            # chunk → embed → write/upsert SQLite (full build + incremental add)
 │  ├─ retrieve.py          # embed query → cosine over stored vectors → top-K chunks
 │  ├─ generate.py          # build grounded prompt + call chat → answer
 │  ├─ pipeline.py          # answer_query(question): retrieve + generate + cite
 │  └─ cli.py               # Phase 1 CLI
-├─ app_streamlit.py        # Phase 2 web UI
+├─ app_streamlit.py        # Phase 2 web UI (Q&A + document upload)
 └─ tests/
    ├─ eval_set.jsonl       # answerable + unanswerable test questions
    ├─ run_eval.py          # eval runner (real pipeline)
-   └─ test_pipeline.py     # offline unit tests (fake embed/chat)
+   ├─ test_pipeline.py     # offline unit tests (fake embed/chat)
+   └─ test_documents.py    # offline tests: extraction + incremental upload
 ```
 
 ---
