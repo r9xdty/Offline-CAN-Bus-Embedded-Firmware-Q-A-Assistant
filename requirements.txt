@@ -11,6 +11,9 @@ openai>=1.30
 # Cosine similarity + vector storage helpers.
 numpy>=1.24
 
+# PDF text extraction for uploaded documents (Streamlit UI).
+pypdf>=4.0
+
 # Phase 2 web UI.
 streamlit>=1.30
 
