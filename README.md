@@ -221,20 +221,25 @@ chunking quality is the main retrieval-quality lever.
 
 ## Evaluation
 
-`tests/eval_set.jsonl` holds answerable and unanswerable (refusal) questions. Each item is
-either `{"expected_behavior": "answer", "must_include_any": [...]}` or
-`{"expected_behavior": "refuse"}`.
+`tests/eval_set.jsonl` holds answerable and unanswerable (refusal) questions, plus **multi-turn**
+items. Each item is one of:
+- `{"expected_behavior": "answer", "must_include_any": [...], "expect_source": "..."}`
+- `{"expected_behavior": "refuse"}`
+- multi-turn: add `"history_questions": [...]` — those are asked first (building real conversation
+  memory) and then the `"question"` is graded, so follow-up retrieval + memory are exercised.
 
 Run the full functional eval against the real pipeline (needs Foundry + the models):
 
 ```bash
-python -m tests.run_eval          # human-readable pass/fail + latency
-python -m tests.run_eval --json   # machine-readable results
+python -m tests.run_eval                 # human-readable pass/fail + latency
+python -m tests.run_eval --mode explain  # evaluate in "explain" mode (default: short)
+python -m tests.run_eval --out results.md  # also write a Markdown results table
+python -m tests.run_eval --json          # machine-readable results
 ```
 
 Targets (per the build spec): answerable questions return the right fact **with a citation**;
 out-of-corpus questions return the exact refusal string; latency ~1–3 s per answer on the
-target laptop.
+target laptop. Use `--out` to record a results table for the README/PR.
 
 ### Offline unit tests (no GPU / models needed)
 

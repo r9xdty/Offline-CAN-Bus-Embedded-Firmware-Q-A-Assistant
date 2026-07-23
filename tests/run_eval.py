@@ -1,13 +1,19 @@
 """Evaluation runner (spec §12) — score the pipeline against tests/eval_set.jsonl.
 
-    python -m tests.run_eval            # run all eval items through the real pipeline
-    python -m tests.run_eval --json     # machine-readable per-item results
+    python -m tests.run_eval                 # run all eval items through the real pipeline
+    python -m tests.run_eval --mode explain  # evaluate in "explain" mode (default: short)
+    python -m tests.run_eval --json          # machine-readable per-item results
+    python -m tests.run_eval --out results.md  # also write a Markdown results table
 
 Each eval item is one of:
   - {"expected_behavior": "refuse"} -> passes when the answer is exactly the refusal string.
   - {"expected_behavior": "answer", "must_include_any": [...], "expect_source": "..."} ->
     passes when the answer is NOT a refusal and contains at least one required substring
-    (case-insensitive). If `expect_source` is present it is reported but not required to pass.
+    (case-insensitive). `expect_source` is reported but not required to pass.
+
+Multi-turn items add "history_questions": [...] — those are asked first (building real
+conversation memory) and then the graded "question" is asked with that history, so follow-up
+retrieval + memory are exercised end-to-end.
 """
 
 from __future__ import annotations
@@ -63,13 +69,23 @@ def grade(item: dict, answer_text: str, sources: List[str]) -> tuple[bool, str]:
     return True, "answer contains a required fact" + src_note
 
 
-def run_eval(
-    answer_fn: Optional[Callable[[str], "object"]] = None,
-    items: Optional[List[dict]] = None,
-) -> dict:
-    """Run every eval item and return a results dict. `answer_fn(question) -> Answer`.
+def _answer(answer_fn: Callable, question: str, history, mode: str):
+    """Call answer_fn tolerantly (it may or may not accept history/mode kwargs)."""
+    try:
+        return answer_fn(question, history=history, mode=mode)
+    except TypeError:
+        return answer_fn(question)  # simple (question) -> Answer fakes
 
-    Defaults to the real cached pipeline; inject a fake in tests.
+
+def run_eval(
+    answer_fn: Optional[Callable] = None,
+    items: Optional[List[dict]] = None,
+    mode: Optional[str] = None,
+) -> dict:
+    """Run every eval item and return a results dict.
+
+    `answer_fn(question, history=..., mode=...) -> Answer`; defaults to the real cached
+    pipeline. Multi-turn items ask their `history_questions` first to build real memory.
     """
     if items is None:
         items = load_eval()
@@ -82,9 +98,17 @@ def run_eval(
     passed = 0
     for item in items:
         question = item["question"]
+
+        # Build real conversation memory from any preceding turns.
+        history: List[tuple] = []
+        for prior in item.get("history_questions", []):
+            prior_ans = _answer(answer_fn, prior, history, mode)
+            history.append((prior, getattr(prior_ans, "answer", str(prior_ans))))
+
         t0 = time.perf_counter()
-        ans = answer_fn(question)
+        ans = _answer(answer_fn, question, history, mode)
         dt = time.perf_counter() - t0
+
         answer_text = getattr(ans, "answer", str(ans))
         sources = getattr(ans, "sources", [])
         ok, reason = grade(item, answer_text, sources)
@@ -93,6 +117,7 @@ def run_eval(
             {
                 "question": question,
                 "expected_behavior": item.get("expected_behavior"),
+                "multi_turn": bool(item.get("history_questions")),
                 "passed": ok,
                 "reason": reason,
                 "answer": answer_text,
@@ -100,15 +125,45 @@ def run_eval(
                 "latency_s": round(dt, 3),
             }
         )
-    return {"total": len(items), "passed": passed, "results": results}
+    return {"total": len(items), "passed": passed, "mode": mode or config.DEFAULT_MODE, "results": results}
+
+
+def to_markdown(report: dict) -> str:
+    """Render a report as a Markdown results table + summary."""
+    lines = [
+        f"# Eval results — mode: {report['mode']}",
+        "",
+        f"**{report['passed']}/{report['total']} passed**",
+        "",
+        "| Result | Multi-turn | Latency | Question | Notes |",
+        "|---|---|---|---|---|",
+    ]
+    for r in report["results"]:
+        mark = "✅" if r["passed"] else "❌"
+        mt = "yes" if r["multi_turn"] else ""
+        q = r["question"].replace("|", "\\|")
+        note = r["reason"].replace("|", "\\|")
+        lines.append(f"| {mark} | {mt} | {r['latency_s']:.2f}s | {q} | {note} |")
+    return "\n".join(lines) + "\n"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the CAN-bus RAG eval set.")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    parser.add_argument(
+        "--mode",
+        choices=sorted(config.ANSWER_MODES),
+        default=config.DEFAULT_MODE,
+        help="answer mode to evaluate in (default: %(default)s)",
+    )
+    parser.add_argument("--out", metavar="FILE", help="also write a Markdown results table here")
     args = parser.parse_args()
 
-    report = run_eval()
+    report = run_eval(mode=args.mode)
+
+    if args.out:
+        Path(args.out).write_text(to_markdown(report), encoding="utf-8")
+        print(f"Wrote results to {args.out}")
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -116,12 +171,13 @@ def main() -> None:
 
     for r in report["results"]:
         mark = "PASS" if r["passed"] else "FAIL"
-        print(f"[{mark}] ({r['latency_s']:.2f}s) {r['question']}")
+        tag = " [multi-turn]" if r["multi_turn"] else ""
+        print(f"[{mark}] ({r['latency_s']:.2f}s){tag} {r['question']}")
         print(f"       -> {r['reason']}")
         if not r["passed"]:
             preview = r["answer"].replace("\n", " ")[:160]
             print(f"       answer: {preview}")
-    print(f"\n{report['passed']}/{report['total']} passed")
+    print(f"\n{report['passed']}/{report['total']} passed (mode: {report['mode']})")
     sys.exit(0 if report["passed"] == report["total"] else 1)
 
 
