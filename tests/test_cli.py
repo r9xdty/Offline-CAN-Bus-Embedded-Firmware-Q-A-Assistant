@@ -134,6 +134,19 @@ def test_reset_clears_memory(monkeypatch):
     assert calls[1]["history"] == []  # :reset wiped the memory before the second question
 
 
+def test_greeting_is_not_sent_to_the_pipeline(monkeypatch):
+    monkeypatch.setattr(cli, "Pipeline", _FakePipeline)
+    monkeypatch.setattr(cli.foundry_client, "warmup", lambda: None)
+    monkeypatch.setattr(builtins, "input", _fake_inputs(["hi", "quit"]))
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.run()
+    out = buf.getvalue()
+    assert "assistant" in out.lower()  # the friendly greeting reply was printed
+    assert _FakePipeline.last.calls == []  # a greeting never reached the RAG pipeline
+
+
 def test_streaming_prints_answer_once(monkeypatch):
     monkeypatch.setattr(cli, "Pipeline", _FakePipeline)
     monkeypatch.setattr(cli.foundry_client, "warmup", lambda: None)

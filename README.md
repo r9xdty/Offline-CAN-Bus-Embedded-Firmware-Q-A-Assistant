@@ -130,6 +130,10 @@ python -m src.cli --no-stream   # print each answer at once instead of streaming
 Answers **stream token-by-token** by default, so a long/slow reply appears as it's generated
 instead of after a blank wait (disable with `--no-stream` or `RAG_STREAM=0`).
 
+Greetings ("hi", "merhaba"), thanks, and "what can you do?" get a friendly reply instead of a
+refusal — matched exactly (never as a substring), so real questions are never intercepted and
+these never touch the grounded pipeline or the conversation memory.
+
 The CLI **remembers the conversation**, so follow-ups work ("explain that", "what about at
 250 kbps?" — the previous question is folded into retrieval when a follow-up is elliptical).
 In-session commands: `:short` / `:explain` to switch answer mode, `:reset` to forget the
@@ -371,6 +375,7 @@ integration changes.
 │  ├─ retrieve.py          # embed query → cosine over stored vectors → top-K chunks
 │  ├─ generate.py          # build grounded prompt + call chat → answer
 │  ├─ pipeline.py          # answer_query(question): retrieve + generate + cite
+│  ├─ smalltalk.py         # non-grounded greeting / "what can you do?" replies
 │  └─ cli.py               # Phase 1 CLI
 ├─ app_streamlit.py        # Phase 2 web UI (Q&A + document upload)
 └─ tests/
@@ -378,7 +383,8 @@ integration changes.
    ├─ run_eval.py          # eval runner (real pipeline)
    ├─ test_pipeline.py     # offline unit tests (fake embed/chat)
    ├─ test_documents.py    # offline tests: extraction + incremental upload
-   └─ test_cli.py          # offline tests: CLI loop + client error mapping
+   ├─ test_cli.py          # offline tests: CLI loop + streaming + client error mapping
+   └─ test_smalltalk.py    # offline tests: greeting / meta shortcut
 ```
 
 ---

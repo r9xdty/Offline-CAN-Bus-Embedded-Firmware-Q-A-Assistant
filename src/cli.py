@@ -19,7 +19,7 @@ import random
 import sys
 from typing import List, Tuple
 
-from . import config, foundry_client
+from . import config, foundry_client, smalltalk
 from .pipeline import Answer, Pipeline
 
 QUIT_WORDS = {
@@ -109,6 +109,11 @@ def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> No
             break
         if raw.startswith(":"):
             mode = _handle_command(raw[1:].strip().lower(), mode, history)
+            continue
+        chit_chat = smalltalk.reply(raw)
+        if chit_chat is not None:
+            # Not a grounded turn: reply and don't add it to the conversation memory.
+            print(f"\n{chit_chat}\n")
             continue
         if stream:
             print()  # newline before the streamed answer
