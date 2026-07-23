@@ -63,6 +63,12 @@ CHUNK_OVERLAP_CHARS = 100
 # --------------------------------------------------------------------------- #
 TOP_K = 3
 
+# Minimum cosine similarity for a retrieved chunk to be fed to the model. Chunks below this
+# are dropped, so an off-topic question reaches the model with no context -> a clean refusal
+# instead of a guess over weak matches. Conservative default; watch scores with `--debug` and
+# raise it (e.g. 0.25-0.35) for stricter refusals, or set 0 to disable. Override: RAG_MIN_SCORE.
+MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.1"))
+
 # Keep the whole prompt inside the 4K context budget (spec §2, §8.2).
 CONTEXT_TOKEN_LIMIT = 4096
 MAX_ANSWER_TOKENS = 512
@@ -77,14 +83,62 @@ TEMPERATURE = 0.1
 # The exact string the model must emit when the answer is not in the corpus (spec §9).
 REFUSAL_TEXT = "I don't have that information in the provided documents."
 
-SYSTEM_PROMPT = (
-    "You are an offline engineering assistant for CAN bus and embedded firmware topics.\n"
-    "Answer ONLY using the provided context. Do not use outside knowledge.\n"
-    "If the answer is not in the context, reply exactly: "
-    f'"{REFUSAL_TEXT}"\n'
-    "Be concise and technical. When you use information, cite the source document name in "
-    "square brackets, e.g. [can_fd_basics.md]."
-)
+# --------------------------------------------------------------------------- #
+# Answer modes: same grounded/refusal contract, different style + length.
+# --------------------------------------------------------------------------- #
+ANSWER_MODES = {
+    "short": {
+        "label": "Short",
+        "max_tokens": 160,
+        "instruction": "Answer style: give the direct, definite answer in one or two sentences. No preamble.",
+    },
+    "explain": {
+        "label": "Explain",
+        "max_tokens": 512,
+        "instruction": (
+            "Answer style: give a fuller explanation — state the answer, then explain the "
+            "relevant details and reasoning, drawn only from the context. Short paragraphs or "
+            "bullet points are fine."
+        ),
+    },
+}
+DEFAULT_MODE = os.environ.get("RAG_MODE", "short").strip().lower()
+if DEFAULT_MODE not in ANSWER_MODES:
+    DEFAULT_MODE = "short"
+
+
+def mode_config(mode: str | None) -> dict:
+    """Return the config for `mode`, falling back to the default mode."""
+    return ANSWER_MODES.get((mode or DEFAULT_MODE), ANSWER_MODES[DEFAULT_MODE])
+
+
+def system_prompt(mode: str | None = None) -> str:
+    """Build the system prompt for a given answer mode.
+
+    The exact-refusal rule is stated last (recency) so it holds in both modes — the style
+    directive only shapes how *grounded* answers read, never whether to refuse.
+    """
+    minfo = mode_config(mode)
+    return (
+        "You are an offline engineering assistant for CAN bus and embedded firmware topics.\n"
+        "Answer ONLY using the provided context. Do not use outside knowledge.\n"
+        f"{minfo['instruction']}\n"
+        "When you use information, cite the source document name in square brackets, "
+        "e.g. [can_fd_basics.md].\n"
+        f'If the answer is not in the context, reply exactly: "{REFUSAL_TEXT}"'
+    )
+
+
+# Backwards-compatible default (short mode).
+SYSTEM_PROMPT = system_prompt("short")
+
+# --------------------------------------------------------------------------- #
+# Conversation memory (multi-turn follow-ups).
+# --------------------------------------------------------------------------- #
+# How many prior (question, answer) turns to feed back into the prompt.
+HISTORY_TURNS = int(os.environ.get("RAG_HISTORY_TURNS", "3"))
+# Cap each remembered answer in the prompt so history can't blow the token budget.
+HISTORY_ANSWER_CHARS = 400
 
 
 def context_char_budget() -> int:

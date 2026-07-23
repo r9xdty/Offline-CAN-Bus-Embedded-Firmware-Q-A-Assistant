@@ -1,12 +1,12 @@
-"""Streamlit UI — Phase 2 interface + document upload (spec §10.2).
+"""Streamlit UI — Phase 2 interface (spec §10.2): chat with memory, modes, and document upload.
 
 Run with::
 
     streamlit run app_streamlit.py
 
-Left sidebar: manage the knowledge base — upload embedded-systems PDFs / Markdown / text files,
-see what's indexed, and remove documents. Main pane: ask a question and get a grounded answer
-with sources and a retrieved-chunk expander.
+Left sidebar: answer mode (short / explain), a clear-conversation button, and the knowledge-base
+manager (upload embedded-systems PDFs / Markdown / text, see what's indexed, remove documents).
+Main pane: a chat that remembers the conversation, so follow-ups like "explain that" work.
 
 The Foundry client and knowledge base are cached so each query is fast. Uploading requires the
 Foundry Local server to be running (it embeds the new chunks on the NVIDIA GPU).
@@ -60,9 +60,22 @@ def _handle_uploads(files) -> None:
         _refresh_pipeline()
 
 
-def _sidebar() -> None:
-    st.sidebar.header("Knowledge base")
+def _sidebar() -> str:
+    """Render sidebar controls; return the selected answer mode."""
+    st.sidebar.header("Chat")
+    mode = st.sidebar.radio(
+        "Answer mode",
+        options=list(config.ANSWER_MODES),
+        format_func=lambda m: config.ANSWER_MODES[m]["label"],
+        index=list(config.ANSWER_MODES).index(config.DEFAULT_MODE),
+        help="Short = a direct 1-2 sentence answer. Explain = a fuller, explained answer.",
+    )
+    if st.sidebar.button("🧹 Clear conversation"):
+        st.session_state.messages = []
+        st.rerun()
 
+    st.sidebar.divider()
+    st.sidebar.header("Knowledge base")
     files = st.sidebar.file_uploader(
         "Upload documents",
         type=["pdf", "md", "markdown", "txt"],
@@ -73,32 +86,54 @@ def _sidebar() -> None:
     if files and st.sidebar.button("Add to knowledge base", type="primary"):
         _handle_uploads(files)
 
-    st.sidebar.divider()
     sources = ingest.list_sources()
     if not sources:
         st.sidebar.caption("Empty. Upload files above, or run `python -m src.ingest`.")
-        return
+    else:
+        total = sum(n for _, n in sources)
+        st.sidebar.caption(f"{len(sources)} documents · {total} chunks")
+        for source, n in sources:
+            col_name, col_btn = st.sidebar.columns([0.78, 0.22])
+            col_name.write(f"`{source}`  \n{n} chunks")
+            if col_btn.button("✕", key=f"rm_{source}", help=f"Remove {source}"):
+                ingest.remove_source(source)
+                _refresh_pipeline()
+                st.rerun()
+    return mode
 
-    total = sum(n for _, n in sources)
-    st.sidebar.caption(f"{len(sources)} documents · {total} chunks")
-    for source, n in sources:
-        col_name, col_btn = st.sidebar.columns([0.78, 0.22])
-        col_name.write(f"`{source}`  \n{n} chunks")
-        if col_btn.button("✕", key=f"rm_{source}", help=f"Remove {source}"):
-            ingest.remove_source(source)
-            _refresh_pipeline()
-            st.rerun()
+
+def _render_turn(turn: dict) -> None:
+    """Render one saved (question, answer) exchange as chat messages."""
+    with st.chat_message("user"):
+        st.write(turn["question"])
+    with st.chat_message("assistant"):
+        st.write(turn["answer"])
+        if turn["sources"]:
+            st.markdown("**Sources:** " + ", ".join(f"`{s}`" for s in turn["sources"]))
+        else:
+            st.markdown("**Sources:** _(none — not grounded in the corpus)_")
+        top = f"{turn['top_score']:.2f}" if turn["top_score"] is not None else "n/a"
+        st.caption(f"{turn['mode']} · answered in {turn['elapsed_s']:.1f}s · top match {top}")
+        if turn["chunks"]:
+            with st.expander("Retrieved chunks & similarity scores"):
+                for src, idx, score, content in turn["chunks"]:
+                    st.markdown(f"**`{src}` #{idx}** — score `{score:.4f}`")
+                    st.text(content)
+                    st.divider()
 
 
 def main() -> None:
     st.set_page_config(page_title="CAN Bus / Firmware Q&A", page_icon="🔧", layout="wide")
     st.title("🔧 Offline CAN Bus / Embedded Firmware Q&A")
     st.caption(
-        "Offline retrieval-augmented Q&A over your local embedded-systems corpus. "
+        "Offline retrieval-augmented Q&A over your local embedded-systems corpus, with memory. "
         "Chat on the Intel iGPU (OpenVINO), embeddings on the NVIDIA GPU (CUDA)."
     )
 
-    _sidebar()
+    mode = _sidebar()
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
     pipeline = get_pipeline()
     if pipeline.size == 0:
@@ -108,36 +143,28 @@ def main() -> None:
         )
         return
 
-    st.markdown(f"**{pipeline.size} chunks indexed.** Ask a CAN-bus or firmware question.")
+    st.caption(f"{pipeline.size} chunks indexed · mode: **{config.ANSWER_MODES[mode]['label']}**")
 
-    with st.form("question_form"):
-        question = st.text_input(
-            "Your question",
-            placeholder="e.g. What is the maximum CAN bus length at 500 kbps?",
+    for turn in st.session_state.messages:
+        _render_turn(turn)
+
+    question = st.chat_input("Ask a CAN-bus or firmware question (follow-ups are remembered)…")
+    if question and question.strip():
+        history = [(m["question"], m["answer"]) for m in st.session_state.messages]
+        with st.spinner("Retrieving and generating…"):
+            result = pipeline.answer(question, history=history, mode=mode)
+        st.session_state.messages.append(
+            {
+                "question": result.question,
+                "answer": result.answer,
+                "sources": result.sources,
+                "top_score": result.top_score,
+                "elapsed_s": result.elapsed_s,
+                "mode": result.mode,
+                "chunks": [(c.source, c.chunk_index, c.score, c.content) for c in result.chunks],
+            }
         )
-        submitted = st.form_submit_button("Ask", type="primary")
-
-    if submitted and question.strip():
-        with st.spinner("Retrieving and generating..."):
-            result = pipeline.answer(question)
-
-        st.subheader("Answer")
-        st.write(result.answer)
-
-        if result.sources:
-            st.markdown("**Sources:** " + ", ".join(f"`{s}`" for s in result.sources))
-        else:
-            st.markdown("**Sources:** _(none — answer not grounded in the corpus)_")
-
-        with st.expander("Retrieved chunks & similarity scores"):
-            if not result.chunks:
-                st.write("No chunks retrieved.")
-            for ch in result.chunks:
-                st.markdown(f"**`{ch.source}` #{ch.chunk_index}** — score `{ch.score:.4f}`")
-                st.text(ch.content)
-                st.divider()
-    elif submitted:
-        st.warning("Please enter a question.")
+        st.rerun()
 
 
 if __name__ == "__main__":

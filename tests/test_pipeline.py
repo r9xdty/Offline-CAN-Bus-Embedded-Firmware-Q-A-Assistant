@@ -216,6 +216,61 @@ def test_generate_answer_uses_chat_fn():
 
 
 # --------------------------------------------------------------------------- #
+# Answer modes + conversation memory
+# --------------------------------------------------------------------------- #
+def test_build_messages_includes_history_and_mode():
+    chunks = [_chunk("can_fd_basics.md", "CAN FD supports up to 64 data bytes.")]
+    history = [("What is CAN FD?", "A flexible-data-rate extension of CAN.")]
+    messages = generate.build_messages("How many bytes?", chunks, history=history, mode="explain")
+
+    roles = [m["role"] for m in messages]
+    assert roles == ["system", "user", "assistant", "user"]  # system, one prior turn, current
+    assert config.ANSWER_MODES["explain"]["instruction"] in messages[0]["content"]
+    assert config.REFUSAL_TEXT in messages[0]["content"]  # refusal rule holds in explain mode
+    assert messages[1]["content"] == "What is CAN FD?"
+    assert "How many bytes?" in messages[-1]["content"]
+
+
+def test_short_and_explain_use_different_instructions():
+    chunks = [_chunk("can_fd_basics.md", "CAN FD supports up to 64 data bytes.")]
+    short_sys = generate.build_messages("q", chunks, mode="short")[0]["content"]
+    explain_sys = generate.build_messages("q", chunks, mode="explain")[0]["content"]
+    assert config.ANSWER_MODES["short"]["instruction"] in short_sys
+    assert config.ANSWER_MODES["explain"]["instruction"] in explain_sys
+    assert short_sys != explain_sys
+
+
+def test_history_answers_are_truncated(monkeypatch):
+    monkeypatch.setattr(config, "HISTORY_ANSWER_CHARS", 20)
+    chunks = [_chunk("a.md", "x")]
+    long_answer = "y" * 200
+    messages = generate.build_messages("q", chunks, history=[("prev?", long_answer)])
+    prior_assistant = messages[2]["content"]
+    assert len(prior_assistant) < 200 and prior_assistant.endswith("...")
+
+
+def test_retrieval_query_expands_elliptical_followups():
+    from src.pipeline import _retrieval_query
+
+    history = [("What is the max CAN bus length at 500 kbps?", "About 100 m.")]
+    # Elliptical follow-up gets the previous question prepended for retrieval.
+    assert "500 kbps" in _retrieval_query("what about at 250 kbps?", history)
+    assert "500 kbps" in _retrieval_query("explain that", history)
+    # A self-contained question is used as-is (no dilution).
+    assert _retrieval_query("What is a PGN in J1939 and how is it structured?", history) == (
+        "What is a PGN in J1939 and how is it structured?"
+    )
+    # No history -> unchanged.
+    assert _retrieval_query("explain that", None) == "explain that"
+
+
+def test_answer_threads_mode_and_reports_it(tmp_path):
+    pipe = _pipeline_with(tmp_path, lambda m: "About 100 meters. [length_doc.md]")
+    ans = pipe.answer("length at 500 kbps", mode="explain")
+    assert ans.mode == "explain"
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline: refusal + citation logic
 # --------------------------------------------------------------------------- #
 def _pipeline_with(tmp_path: Path, chat_fn: Callable[[List[dict]], str]) -> Pipeline:
@@ -251,6 +306,45 @@ def test_pipeline_refusal_string_clears_sources(tmp_path: Path):
     ans = pipe.answer("something the model cannot answer")
     assert ans.is_refusal
     assert ans.sources == []
+
+
+def test_similarity_threshold_refuses_without_calling_the_model(tmp_path, monkeypatch):
+    def chat_must_not_run(messages):
+        raise AssertionError("chat must not run when every chunk is below the score floor")
+
+    pipe = _pipeline_with(tmp_path, chat_must_not_run)
+    # A cosine floor above 1.0 filters everything -> deterministic refusal, no model call.
+    monkeypatch.setattr(config, "MIN_SCORE", 2.0)
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.is_refusal
+    assert ans.sources == []
+    assert ans.chunks  # retrieved chunks are still surfaced (below-threshold) for transparency
+
+
+def test_answer_reports_latency_and_top_score(tmp_path):
+    pipe = _pipeline_with(tmp_path, lambda m: "About 100 meters. [length_doc.md]")
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.elapsed_s >= 0.0
+    assert ans.top_score is not None and ans.top_score > 0
+
+
+def test_pdf_citation_is_recognized(tmp_path):
+    db = tmp_path / "kb.sqlite"
+    # A PDF uploaded via the UI is stored by add_document with a .pdf source label.
+    ingest.add_document(
+        "datasheet.pdf",
+        "length length length CAN bus length at 500 kbps 100 meters",
+        db,
+        bow_embed,
+    )
+
+    pipe = Pipeline(
+        db_path=db,
+        embed_query_fn=bow_embed_query,
+        chat_fn=lambda m: "About 100 meters. [datasheet.pdf]",
+    )
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.sources == ["datasheet.pdf"]  # .pdf citation is now parsed
 
 
 # --------------------------------------------------------------------------- #

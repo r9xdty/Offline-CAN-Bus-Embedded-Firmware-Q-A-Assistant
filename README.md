@@ -121,21 +121,45 @@ This prints the total chunk count when finished.
 ### CLI
 
 ```bash
-python -m src.cli               # ask questions in a loop
+python -m src.cli               # ask questions in a loop (remembers the conversation)
 python -m src.cli --debug       # also show retrieved chunks + similarity scores
+python -m src.cli --mode explain  # start in "explain" mode (default: short)
 ```
 
-Type `quit` or submit an empty line to exit. Example session:
+The CLI **remembers the conversation**, so follow-ups work ("explain that", "what about at
+250 kbps?" — the previous question is folded into retrieval when a follow-up is elliptical).
+In-session commands: `:short` / `:explain` to switch answer mode, `:reset` to forget the
+conversation, `:help` for the list. Type `quit` or submit an empty line to exit. Example:
 
 ```
-Q> What is the maximum CAN bus length at 500 kbps?
+Q[short]> What is the maximum CAN bus length at 500 kbps?
 About 100 meters at 500 kbit/s. [can_2_0_basics.md]
 Sources: ['can_2_0_basics.md']
+(2.3s · short · top match 0.71)
 
-Q> What's the WiFi setup procedure?
+Q[short]> :explain
+[mode: explain]
+
+Q[explain]> What's the WiFi setup procedure?
 I don't have that information in the provided documents.
 Sources: []
+(0.1s · explain · top match 0.09)
 ```
+
+Each answer shows how long it took, the mode, and the best retrieval score, so you can see when
+a match is weak (and why an off-topic question was refused). See **Answer modes** and
+**Tuning retrieval** below.
+
+### Answer modes
+
+Two styles of the same grounded, cited, refuse-when-unknown answer:
+
+- **short** (default) — a direct, definite answer in one or two sentences.
+- **explain** — a fuller answer that states the result then explains the relevant details from
+  the context.
+
+Switch with `--mode` at launch, `:short` / `:explain` in the CLI, or the sidebar radio in
+Streamlit. Set the default with `RAG_MODE`. The exact-refusal contract holds in both modes.
 
 ### Streamlit
 
@@ -143,9 +167,11 @@ Sources: []
 streamlit run app_streamlit.py
 ```
 
-The main pane has a text box, a submit button, the grounded answer with its sources, and an
-expander showing the retrieved chunks + scores. The Foundry client and KB are cached, so each
-query is fast.
+The main pane is a **chat with memory** — ask a question, then follow up ("explain that")
+and it uses the conversation so far. Each answer shows its sources, mode, latency, and an
+expander with the retrieved chunks + scores. The sidebar has the **answer-mode** selector
+(short / explain) and a **Clear conversation** button. The Foundry client and KB are cached, so
+each query is fast.
 
 **Upload documents (sidebar).** Drop embedded-systems **PDF / Markdown / text** files into the
 uploader and click *Add to knowledge base*. Each file's text is extracted (PDFs are converted
@@ -210,8 +236,26 @@ deterministic test suite that injects fake embed/chat functions. It runs anywher
 
 ```bash
 pip install pytest
-python -m pytest tests/test_pipeline.py -q
+python -m pytest tests/ -q          # 41 tests
 ```
+
+These run in CI too — `.github/workflows/ci.yml` runs the whole suite on every push and pull
+request (only `numpy` + `pytest` needed, no GPU/runtime).
+
+### Tuning retrieval
+
+Retrieved chunks below `MIN_SCORE` (cosine similarity) are dropped before generation, so an
+off-topic question reaches the model with no context and gets a clean, deterministic refusal
+instead of a guess over weak matches. Watch the `top match` score printed with each answer (or
+the per-chunk scores under `--debug`):
+
+- If off-topic questions still get answered, **raise** the floor:
+  `setx RAG_MIN_SCORE 0.3` (typical strict range 0.25–0.35).
+- If legitimate questions get wrongly refused, **lower** it (e.g. `0.05`, or `0` to disable).
+
+The default is a conservative `0.1`. Also tunable: `RAG_CHAT_MODEL`, `RAG_EMBED_MODEL`,
+`RAG_MODE` (short/explain), `RAG_HISTORY_TURNS`, `RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`,
+`RAG_DB_PATH`.
 
 ---
 
@@ -310,6 +354,7 @@ integration changes.
 ```
 ├─ README.md
 ├─ requirements.txt
+├─ .github/workflows/ci.yml   # runs the offline test suite on push / PR
 ├─ data/
 │  ├─ raw/                 # source documents (.md / .txt)
 │  └─ kb.sqlite            # generated: chunks + embeddings
@@ -328,7 +373,8 @@ integration changes.
    ├─ eval_set.jsonl       # answerable + unanswerable test questions
    ├─ run_eval.py          # eval runner (real pipeline)
    ├─ test_pipeline.py     # offline unit tests (fake embed/chat)
-   └─ test_documents.py    # offline tests: extraction + incremental upload
+   ├─ test_documents.py    # offline tests: extraction + incremental upload
+   └─ test_cli.py          # offline tests: CLI loop + client error mapping
 ```
 
 ---

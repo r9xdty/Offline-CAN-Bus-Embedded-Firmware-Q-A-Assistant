@@ -1,7 +1,13 @@
-"""CLI — Phase 1 interface (spec §10.1).
+"""CLI — Phase 1 interface (spec §10.1), with conversation memory and answer modes.
 
-    python -m src.cli            # ask questions in a loop
-    python -m src.cli --debug    # also print retrieved chunks + similarity scores
+    python -m src.cli                    # ask questions in a loop (remembers the conversation)
+    python -m src.cli --debug            # also print retrieved chunks + similarity scores
+    python -m src.cli --mode explain     # start in "explain" mode (default: short)
+
+In-session commands:
+    :short / :explain    switch answer mode
+    :reset (:clear)      forget the conversation so far
+    :help                show commands
 
 Type `quit` (or `q`, `bye`, an empty line, Ctrl+C) to exit.
 """
@@ -11,6 +17,7 @@ from __future__ import annotations
 import argparse
 import random
 import sys
+from typing import List, Tuple
 
 from . import config, foundry_client
 from .pipeline import Answer, Pipeline
@@ -27,6 +34,14 @@ QUIT_WORDS = {
 
 GOODBYE_MESSAGES = ["Bye", "hadi sende sg", "Adamsin Quershma", "Gorusuruz knk", "babays"]
 
+_HELP = (
+    "Commands:\n"
+    "  :short / :explain   switch answer mode (short = 1-2 sentences, explain = fuller)\n"
+    "  :reset (:clear)     forget the conversation so far\n"
+    "  :help               show this help\n"
+    "  quit / q / bye      exit"
+)
+
 
 def _print_answer(result: Answer, debug: bool) -> None:
     print(f"\n{result.answer}")
@@ -34,6 +49,8 @@ def _print_answer(result: Answer, debug: bool) -> None:
         print(f"Sources: {result.sources}")
     else:
         print("Sources: []")
+    top = f"{result.top_score:.2f}" if result.top_score is not None else "n/a"
+    print(f"({result.elapsed_s:.1f}s · {result.mode} · top match {top})")
     if debug:
         print("\n--- retrieved chunks ---")
         if not result.chunks:
@@ -44,7 +61,23 @@ def _print_answer(result: Answer, debug: bool) -> None:
     print()
 
 
-def run(debug: bool = False) -> None:
+def _handle_command(cmd: str, mode: str, history: List[Tuple[str, str]]) -> str:
+    """Apply an in-session `:command`. Returns the (possibly changed) mode."""
+    if cmd in config.ANSWER_MODES:
+        print(f"[mode: {cmd}]")
+        return cmd
+    if cmd in {"reset", "clear", "new"}:
+        history.clear()
+        print("[conversation cleared]")
+    elif cmd in {"help", "?"}:
+        print(_HELP)
+    else:
+        print(f"[unknown command ':{cmd}' — try :help]")
+    return mode
+
+
+def run(debug: bool = False, mode: str | None = None) -> None:
+    mode = mode or config.DEFAULT_MODE
     print("Loading models and knowledge base (first run may download models)...")
     pipeline = Pipeline()
     if pipeline.size == 0:
@@ -62,18 +95,24 @@ def run(debug: bool = False) -> None:
     except Exception as exc:  # noqa: BLE001 - non-fatal; the first query will surface details
         print(f"  (warm-up skipped: {exc})", file=sys.stderr)
 
-    print(f"Ready — {pipeline.size} chunks indexed. Ask a CAN-bus / firmware question.\n")
+    print(f"Chat model: {config.CHAT_MODEL_ID}  ·  Embedding: {config.EMBED_MODEL_ID}")
+    print(f"Ready — {pipeline.size} chunks indexed. Mode: {mode}. Type :help for commands.\n")
 
+    history: List[Tuple[str, str]] = []
     while True:
         try:
-            question = input("Q> ").strip()
+            raw = input(f"Q[{mode}]> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if not question or question.lower() in QUIT_WORDS:
+        if not raw or raw.lower() in QUIT_WORDS:
             break
-        result = pipeline.answer(question)
+        if raw.startswith(":"):
+            mode = _handle_command(raw[1:].strip().lower(), mode, history)
+            continue
+        result = pipeline.answer(raw, history=history, mode=mode)
         _print_answer(result, debug)
+        history.append((raw, result.answer))
 
     print(random.choice(GOODBYE_MESSAGES))
 
@@ -85,8 +124,14 @@ def main() -> None:
         action="store_true",
         help="print retrieved chunks and similarity scores with each answer",
     )
+    parser.add_argument(
+        "--mode",
+        choices=sorted(config.ANSWER_MODES),
+        default=config.DEFAULT_MODE,
+        help="answer style: 'short' (1-2 sentences) or 'explain' (fuller). Default: short.",
+    )
     args = parser.parse_args()
-    run(debug=args.debug)
+    run(debug=args.debug, mode=args.mode)
 
 
 if __name__ == "__main__":
