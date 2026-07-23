@@ -27,7 +27,7 @@ import re
 import shutil
 import subprocess
 import threading
-from typing import Any, List
+from typing import Any, Callable, List
 
 import numpy as np
 
@@ -216,16 +216,48 @@ def embed_query(text: str) -> np.ndarray:
     return np.asarray(resp.data[0].embedding, dtype=np.float32)
 
 
-def chat(messages: List[dict], max_tokens: int | None = None) -> str:
-    """Run a grounded chat completion on the Intel iGPU and return the answer text."""
+def chat(
+    messages: List[dict],
+    max_tokens: int | None = None,
+    on_token: "Callable[[str], None] | None" = None,
+) -> str:
+    """Run a grounded chat completion on the Intel iGPU and return the answer text.
+
+    If `on_token` is given, stream the response: each text delta is passed to `on_token` as it
+    arrives and the full text is still returned at the end. Otherwise a single blocking call.
+    """
     client = get_client()
-    resp = _call(
-        lambda: client.chat.completions.create(
+    mt = max_tokens or config.MAX_ANSWER_TOKENS
+
+    if on_token is None:
+        resp = _call(
+            lambda: client.chat.completions.create(
+                model=config.CHAT_MODEL_ID,
+                messages=messages,
+                temperature=config.TEMPERATURE,
+                max_tokens=mt,
+            ),
+            config.CHAT_MODEL_ID,
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    def _stream() -> str:
+        parts: List[str] = []
+        stream = client.chat.completions.create(
             model=config.CHAT_MODEL_ID,
             messages=messages,
             temperature=config.TEMPERATURE,
-            max_tokens=max_tokens or config.MAX_ANSWER_TOKENS,
-        ),
-        config.CHAT_MODEL_ID,
-    )
-    return (resp.choices[0].message.content or "").strip()
+            max_tokens=mt,
+            stream=True,
+        )
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            delta = getattr(choices[0].delta, "content", None)
+            if delta:
+                parts.append(delta)
+                on_token(delta)
+        return "".join(parts)
+
+    return _call(_stream, config.CHAT_MODEL_ID).strip()

@@ -43,8 +43,8 @@ _HELP = (
 )
 
 
-def _print_answer(result: Answer, debug: bool) -> None:
-    print(f"\n{result.answer}")
+def _print_meta(result: Answer, debug: bool) -> None:
+    """Print the sources + stats line (and, with --debug, the retrieved chunks)."""
     if result.sources:
         print(f"Sources: {result.sources}")
     else:
@@ -76,7 +76,7 @@ def _handle_command(cmd: str, mode: str, history: List[Tuple[str, str]]) -> str:
     return mode
 
 
-def run(debug: bool = False, mode: str | None = None) -> None:
+def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> None:
     mode = mode or config.DEFAULT_MODE
     print("Loading models and knowledge base (first run may download models)...")
     pipeline = Pipeline()
@@ -110,8 +110,15 @@ def run(debug: bool = False, mode: str | None = None) -> None:
         if raw.startswith(":"):
             mode = _handle_command(raw[1:].strip().lower(), mode, history)
             continue
-        result = pipeline.answer(raw, history=history, mode=mode)
-        _print_answer(result, debug)
+        if stream:
+            print()  # newline before the streamed answer
+            on_token = lambda tok: print(tok, end="", flush=True)  # noqa: E731
+            result = pipeline.answer(raw, history=history, mode=mode, on_token=on_token)
+            print("\n")  # close the streamed answer
+        else:
+            result = pipeline.answer(raw, history=history, mode=mode)
+            print(f"\n{result.answer}")
+        _print_meta(result, debug)
         history.append((raw, result.answer))
 
     print(random.choice(GOODBYE_MESSAGES))
@@ -130,8 +137,13 @@ def main() -> None:
         default=config.DEFAULT_MODE,
         help="answer style: 'short' (1-2 sentences) or 'explain' (fuller). Default: short.",
     )
+    parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="print each answer all at once instead of streaming it token-by-token",
+    )
     args = parser.parse_args()
-    run(debug=args.debug, mode=args.mode)
+    run(debug=args.debug, mode=args.mode, stream=config.STREAM_DEFAULT and not args.no_stream)
 
 
 if __name__ == "__main__":

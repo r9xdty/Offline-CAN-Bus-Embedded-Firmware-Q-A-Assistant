@@ -140,6 +140,10 @@ HISTORY_TURNS = int(os.environ.get("RAG_HISTORY_TURNS", "3"))
 # Cap each remembered answer in the prompt so history can't blow the token budget.
 HISTORY_ANSWER_CHARS = 400
 
+# Stream answers token-by-token by default (feels faster on the slow iGPU). Disable with
+# RAG_STREAM=0 or `--no-stream`; the non-streaming path is always available as a fallback.
+STREAM_DEFAULT = os.environ.get("RAG_STREAM", "1").strip().lower() not in {"0", "false", "no"}
+
 
 def context_char_budget() -> int:
     """Number of characters available for retrieved context inside the 4K budget."""

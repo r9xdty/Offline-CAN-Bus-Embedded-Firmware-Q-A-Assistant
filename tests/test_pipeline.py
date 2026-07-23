@@ -270,6 +270,30 @@ def test_answer_threads_mode_and_reports_it(tmp_path):
     assert ans.mode == "explain"
 
 
+def test_generate_answer_emits_tokens(monkeypatch):
+    chunks = [_chunk("a.md", "content")]
+    tokens = []
+    out = generate.generate_answer(
+        "q", chunks, chat_fn=lambda m: "hello answer [a.md]", on_token=tokens.append
+    )
+    assert tokens == ["hello answer [a.md]"]  # fake emits the whole answer once
+    assert out == "hello answer [a.md]"
+
+
+def test_generate_answer_streams_refusal_without_chunks():
+    tokens = []
+    out = generate.generate_answer("q", [], on_token=tokens.append)
+    assert out == config.REFUSAL_TEXT
+    assert tokens == [config.REFUSAL_TEXT]  # refusal is streamed too
+
+
+def test_pipeline_answer_streams(tmp_path):
+    tokens = []
+    pipe = _pipeline_with(tmp_path, lambda m: "About 100 meters. [length_doc.md]")
+    ans = pipe.answer("length at 500 kbps", on_token=tokens.append)
+    assert "".join(tokens) == ans.answer  # streamed content matches the final answer
+
+
 # --------------------------------------------------------------------------- #
 # Pipeline: refusal + citation logic
 # --------------------------------------------------------------------------- #
