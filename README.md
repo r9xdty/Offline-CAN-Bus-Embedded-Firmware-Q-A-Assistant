@@ -124,7 +124,11 @@ This prints the total chunk count when finished.
 python -m src.cli               # ask questions in a loop (remembers the conversation)
 python -m src.cli --debug       # also show retrieved chunks + similarity scores
 python -m src.cli --mode explain  # start in "explain" mode (default: short)
+python -m src.cli --no-stream   # print each answer at once instead of streaming it
 ```
+
+Answers **stream token-by-token** by default, so a long/slow reply appears as it's generated
+instead of after a blank wait (disable with `--no-stream` or `RAG_STREAM=0`).
 
 The CLI **remembers the conversation**, so follow-ups work ("explain that", "what about at
 250 kbps?" — the previous question is folded into retrieval when a follow-up is elliptical).
@@ -168,10 +172,10 @@ streamlit run app_streamlit.py
 ```
 
 The main pane is a **chat with memory** — ask a question, then follow up ("explain that")
-and it uses the conversation so far. Each answer shows its sources, mode, latency, and an
-expander with the retrieved chunks + scores. The sidebar has the **answer-mode** selector
-(short / explain) and a **Clear conversation** button. The Foundry client and KB are cached, so
-each query is fast.
+and it uses the conversation so far. Answers **stream in live**. Each answer shows its sources,
+mode, latency, and an expander with the retrieved chunks + scores. The sidebar has the
+**answer-mode** selector (short / explain) and a **Clear conversation** button. The Foundry
+client and KB are cached, so each query is fast.
 
 **Upload documents (sidebar).** Drop embedded-systems **PDF / Markdown / text** files into the
 uploader and click *Add to knowledge base*. Each file's text is extracted (PDFs are converted
@@ -254,8 +258,8 @@ the per-chunk scores under `--debug`):
 - If legitimate questions get wrongly refused, **lower** it (e.g. `0.05`, or `0` to disable).
 
 The default is a conservative `0.1`. Also tunable: `RAG_CHAT_MODEL`, `RAG_EMBED_MODEL`,
-`RAG_MODE` (short/explain), `RAG_HISTORY_TURNS`, `RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`,
-`RAG_DB_PATH`.
+`RAG_MODE` (short/explain), `RAG_HISTORY_TURNS`, `RAG_STREAM` (0 to disable streaming),
+`RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`, `RAG_DB_PATH`.
 
 ---
 

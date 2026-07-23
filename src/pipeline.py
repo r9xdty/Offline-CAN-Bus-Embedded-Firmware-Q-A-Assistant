@@ -107,16 +107,20 @@ class Pipeline:
         history: Optional[Sequence[Turn]] = None,
         mode: str | None = None,
         k: int = config.TOP_K,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Answer:
         """Retrieve top-`k` chunks, drop weak matches, generate a grounded answer, cite.
 
         `history` is prior (question, answer) turns for follow-up continuity; `mode` is
-        "short" or "explain" (falls back to the configured default).
+        "short" or "explain" (falls back to the configured default). `on_token`, if given,
+        streams each answer delta as it arrives.
         """
         start = time.perf_counter()
         mode = mode or config.DEFAULT_MODE
         question = (question or "").strip()
         if not question:
+            if on_token is not None:
+                on_token(config.REFUSAL_TEXT)
             return Answer(
                 question=question,
                 answer=config.REFUSAL_TEXT,
@@ -128,7 +132,8 @@ class Pipeline:
         # Keep only chunks that clear the similarity floor; feed just those to the model.
         relevant = [c for c in retrieved if c.score >= config.MIN_SCORE]
         text = generate.generate_answer(
-            question, relevant, history=history, mode=mode, chat_fn=self._chat_fn
+            question, relevant, history=history, mode=mode,
+            chat_fn=self._chat_fn, on_token=on_token,
         ).strip()
 
         if text == config.REFUSAL_TEXT or not relevant:
@@ -165,6 +170,7 @@ def answer_query(
     history: Optional[Sequence[Turn]] = None,
     mode: str | None = None,
     k: int = config.TOP_K,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> Answer:
     """Convenience wrapper over the cached pipeline (spec §4 entry point)."""
-    return get_pipeline().answer(question, history=history, mode=mode, k=k)
+    return get_pipeline().answer(question, history=history, mode=mode, k=k, on_token=on_token)

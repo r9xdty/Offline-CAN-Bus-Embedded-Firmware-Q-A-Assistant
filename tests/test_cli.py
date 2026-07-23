@@ -38,9 +38,12 @@ class _FakePipeline:
     def size(self) -> int:
         return 5
 
-    def answer(self, question, history=None, mode=None, k=3):
+    def answer(self, question, history=None, mode=None, k=3, on_token=None):
         self.calls.append({"question": question, "history": list(history or []), "mode": mode})
-        return _FakeAnswer(question=question, mode=mode or "short")
+        ans = _FakeAnswer(question=question, mode=mode or "short")
+        if on_token is not None:
+            on_token(ans.answer)  # simulate streaming the whole answer
+        return ans
 
 
 def _fake_inputs(seq):
@@ -129,6 +132,63 @@ def test_reset_clears_memory(monkeypatch):
     calls = _FakePipeline.last.calls
     assert [c["question"] for c in calls] == ["first question", "second question"]
     assert calls[1]["history"] == []  # :reset wiped the memory before the second question
+
+
+def test_streaming_prints_answer_once(monkeypatch):
+    monkeypatch.setattr(cli, "Pipeline", _FakePipeline)
+    monkeypatch.setattr(cli.foundry_client, "warmup", lambda: None)
+    monkeypatch.setattr(builtins, "input", _fake_inputs(["a question", "quit"]))
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.run(stream=True)  # streaming path
+    out = buf.getvalue()
+    answer = _FakeAnswer().answer
+    assert out.count(answer) == 1  # streamed via callback, not also printed separately
+    assert "Sources: ['can_2_0_basics.md']" in out
+
+
+# --------------------------------------------------------------------------- #
+# foundry_client streaming
+# --------------------------------------------------------------------------- #
+class _FakeStreamClient:
+    """Minimal OpenAI-shaped client whose chat completion streams fixed deltas."""
+
+    class _Delta:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.delta = _FakeStreamClient._Delta(content)
+
+    class _Chunk:
+        def __init__(self, content):
+            self.choices = [_FakeStreamClient._Choice(content)]
+
+    class _Completions:
+        def create(self, **kwargs):
+            assert kwargs.get("stream") is True
+            return [
+                _FakeStreamClient._Chunk("The max "),
+                _FakeStreamClient._Chunk("is 100 m."),
+                _FakeStreamClient._Chunk(None),  # empty delta must be skipped
+            ]
+
+    class _Chat:
+        completions = None
+
+    def __init__(self):
+        self.chat = _FakeStreamClient._Chat()
+        self.chat.completions = _FakeStreamClient._Completions()
+
+
+def test_foundry_chat_streams_deltas(monkeypatch):
+    monkeypatch.setattr(foundry_client, "get_client", lambda: _FakeStreamClient())
+    tokens = []
+    full = foundry_client.chat([{"role": "user", "content": "q"}], on_token=tokens.append)
+    assert tokens == ["The max ", "is 100 m."]  # None delta skipped
+    assert full == "The max is 100 m."
 
 
 # --------------------------------------------------------------------------- #

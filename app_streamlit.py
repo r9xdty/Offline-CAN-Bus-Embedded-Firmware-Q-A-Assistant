@@ -151,8 +151,23 @@ def main() -> None:
     question = st.chat_input("Ask a CAN-bus or firmware question (follow-ups are remembered)…")
     if question and question.strip():
         history = [(m["question"], m["answer"]) for m in st.session_state.messages]
-        with st.spinner("Retrieving and generating…"):
-            result = pipeline.answer(question, history=history, mode=mode)
+        with st.chat_message("user"):
+            st.write(question)
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            placeholder.markdown("▌")
+            acc = {"text": ""}
+
+            def _on_token(tok: str) -> None:
+                acc["text"] += tok
+                placeholder.markdown(acc["text"] + "▌")
+
+            stream = config.STREAM_DEFAULT
+            result = pipeline.answer(
+                question, history=history, mode=mode,
+                on_token=_on_token if stream else None,
+            )
+            placeholder.markdown(result.answer)  # final text without the cursor
         st.session_state.messages.append(
             {
                 "question": result.question,

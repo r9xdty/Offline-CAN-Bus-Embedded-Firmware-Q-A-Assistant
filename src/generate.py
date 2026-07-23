@@ -81,10 +81,12 @@ def build_messages(
     ]
 
 
-def _default_chat(messages: List[dict], max_tokens: int) -> str:
+def _default_chat(
+    messages: List[dict], max_tokens: int, on_token: Callable[[str], None] | None
+) -> str:
     from . import foundry_client
 
-    return foundry_client.chat(messages, max_tokens=max_tokens)
+    return foundry_client.chat(messages, max_tokens=max_tokens, on_token=on_token)
 
 
 def generate_answer(
@@ -93,18 +95,24 @@ def generate_answer(
     history: Optional[Sequence[Turn]] = None,
     mode: str | None = None,
     chat_fn: Callable[[List[dict]], str] | None = None,
+    on_token: Callable[[str], None] | None = None,
 ) -> str:
     """Build the grounded prompt and return the model's answer text.
 
     With no retrieved context there is nothing to ground on, so we refuse immediately rather
-    than pay for a model call that should refuse anyway.
+    than pay for a model call that should refuse anyway. `on_token`, if given, streams each
+    text delta as it arrives (the refusal is emitted whole).
     """
     if not chunks:
+        if on_token is not None:
+            on_token(config.REFUSAL_TEXT)
         return config.REFUSAL_TEXT
     fitted = fit_context(chunks)
     messages = build_messages(question, fitted, history=history, mode=mode)
     if chat_fn is not None:
         answer = chat_fn(messages)
+        if on_token is not None and answer:
+            on_token(answer)  # fakes don't stream; emit the whole answer once
     else:
-        answer = _default_chat(messages, config.mode_config(mode)["max_tokens"])
+        answer = _default_chat(messages, config.mode_config(mode)["max_tokens"], on_token)
     return answer.strip() if answer else config.REFUSAL_TEXT
