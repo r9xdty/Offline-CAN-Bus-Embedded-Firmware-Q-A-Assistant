@@ -70,12 +70,13 @@ def build_messages(
     chunks: Sequence[RetrievedChunk],
     history: Optional[Sequence[Turn]] = None,
     mode: str | None = None,
+    allow_general: bool = False,
 ) -> List[dict]:
     """Assemble the messages list: mode-aware system prompt + history + context + question."""
     context = build_context(chunks) if chunks else "(no relevant context found)"
     user = f"CONTEXT:\n{context}\n\nUSER:\n{question}"
     return [
-        {"role": "system", "content": config.system_prompt(mode)},
+        {"role": "system", "content": config.system_prompt(mode, allow_general=allow_general)},
         *_history_messages(history),
         {"role": "user", "content": user},
     ]
@@ -96,19 +97,23 @@ def generate_answer(
     mode: str | None = None,
     chat_fn: Callable[[List[dict]], str] | None = None,
     on_token: Callable[[str], None] | None = None,
+    allow_general: bool = False,
 ) -> str:
     """Build the grounded prompt and return the model's answer text.
 
     With no retrieved context there is nothing to ground on, so we refuse immediately rather
-    than pay for a model call that should refuse anyway. `on_token`, if given, streams each
-    text delta as it arrives (the refusal is emitted whole).
+    than pay for a model call that should refuse anyway -- general knowledge is only offered
+    when there IS relevant context to attempt first. `on_token`, if given, streams each text
+    delta as it arrives (the refusal is emitted whole).
     """
     if not chunks:
         if on_token is not None:
             on_token(config.REFUSAL_TEXT)
         return config.REFUSAL_TEXT
     fitted = fit_context(chunks)
-    messages = build_messages(question, fitted, history=history, mode=mode)
+    messages = build_messages(
+        question, fitted, history=history, mode=mode, allow_general=allow_general
+    )
     if chat_fn is not None:
         answer = chat_fn(messages)
         if on_token is not None and answer:

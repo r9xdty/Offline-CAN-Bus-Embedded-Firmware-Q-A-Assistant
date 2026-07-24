@@ -7,20 +7,50 @@
 In-session commands:
     :short / :explain    switch answer mode
     :reset (:clear)      forget the conversation so far
+    :examples (:ex)      show sample questions
     :help                show commands
 
 Type `quit` (or `q`, `bye`, an empty line, Ctrl+C) to exit.
+
+Output is colorized with plain ANSI codes when stdout is an interactive terminal (disabled
+automatically when piped/captured, or when the NO_COLOR env var is set — see no-color.org).
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import sys
 from typing import List, Tuple
 
 from . import config, foundry_client, smalltalk
 from .pipeline import Answer, Pipeline
+
+# --------------------------------------------------------------------------- #
+# Minimal ANSI color helper — no dependency, auto-disabled for non-tty/NO_COLOR.
+# --------------------------------------------------------------------------- #
+GREEN = "32"
+YELLOW = "33"
+AMBER = "33"  # no distinct "orange" in the base 8-color palette; yellow reads as amber
+RED = "31"
+DIM = "2"
+BOLD = "1"
+
+
+def _use_color() -> bool:
+    """Decide at print time (not import time) so tests that swap sys.stdout see plain text."""
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    return getattr(sys.stdout, "isatty", lambda: False)()
+
+
+def _c(text: str, code: str) -> str:
+    """Wrap `text` in ANSI SGR `code` when color is enabled; otherwise return it unchanged."""
+    if not _use_color():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
 
 QUIT_WORDS = {
     "quit",
@@ -38,26 +68,46 @@ _HELP = (
     "Commands:\n"
     "  :short / :explain   switch answer mode (short = 1-2 sentences, explain = fuller)\n"
     "  :reset (:clear)     forget the conversation so far\n"
+    "  :examples (:ex)     show sample questions\n"
     "  :help               show this help\n"
     "  quit / q / bye      exit"
 )
+
+_GENERAL_NOTICE = "(i) General knowledge — not grounded in your documents."
+
+
+def _kind_color(kind: str) -> str:
+    return {"grounded": GREEN, "general": AMBER, "refusal": DIM}.get(kind, "")
+
+
+def _score_color(score: float) -> str:
+    if score >= 0.5:
+        return GREEN
+    if score >= 0.25:
+        return YELLOW
+    return RED
 
 
 def _print_meta(result: Answer, debug: bool) -> None:
     """Print the sources + stats line (and, with --debug, the retrieved chunks)."""
     if result.sources:
-        print(f"Sources: {result.sources}")
+        print(f"Sources: {_c(str(result.sources), GREEN)}")
     else:
-        print("Sources: []")
-    top = f"{result.top_score:.2f}" if result.top_score is not None else "n/a"
-    print(f"({result.elapsed_s:.1f}s · {result.mode} · top match {top})")
+        print(_c("Sources: []", DIM))
+    if result.top_score is not None:
+        top = _c(f"{result.top_score:.2f}", _score_color(result.top_score))
+    else:
+        top = "n/a"
+    kind = _c(result.kind, _kind_color(result.kind))
+    print(f"({result.elapsed_s:.1f}s · {result.mode} · {kind} · top match {top})")
     if debug:
         print("\n--- retrieved chunks ---")
         if not result.chunks:
             print("  (none)")
         for ch in result.chunks:
             preview = ch.content.replace("\n", " ")
-            print(f"  score={ch.score:.4f}  [{ch.source}#{ch.chunk_index}]  {preview[:140]}...")
+            score = _c(f"score={ch.score:.4f}", DIM)
+            print(f"  {score}  [{ch.source}#{ch.chunk_index}]  {preview[:140]}...")
     print()
 
 
@@ -69,6 +119,10 @@ def _handle_command(cmd: str, mode: str, history: List[Tuple[str, str]]) -> str:
     if cmd in {"reset", "clear", "new"}:
         history.clear()
         print("[conversation cleared]")
+    elif cmd in {"examples", "ex"}:
+        print("Example questions:")
+        for i, q in enumerate(config.EXAMPLE_QUESTIONS, start=1):
+            print(f"  {i}. {q}")
     elif cmd in {"help", "?"}:
         print(_HELP)
     else:
@@ -96,7 +150,8 @@ def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> No
         print(f"  (warm-up skipped: {exc})", file=sys.stderr)
 
     print(f"Chat model: {config.CHAT_MODEL_ID}  ·  Embedding: {config.EMBED_MODEL_ID}")
-    print(f"Ready — {pipeline.size} chunks indexed. Mode: {mode}. Type :help for commands.\n")
+    print(f"Ready — {pipeline.size} chunks indexed. Mode: {mode}. Type :help for commands.")
+    print("Tip: type :examples to see sample questions, :help for commands.\n")
 
     history: List[Tuple[str, str]] = []
     while True:
@@ -123,6 +178,8 @@ def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> No
         else:
             result = pipeline.answer(raw, history=history, mode=mode)
             print(f"\n{result.answer}")
+        if result.kind == "general":
+            print(_c(_GENERAL_NOTICE, AMBER))
         _print_meta(result, debug)
         history.append((raw, result.answer))
 

@@ -30,6 +30,21 @@ user question ──► answer_query(question)
                                  answer + cited source(s)
 ```
 
+Every answer falls into one of **three tiers**, decided by the retrieval scores:
+
+1. **Grounded** — a retrieved chunk clears `MIN_SCORE`, so the model answers from that chunk and
+   cites the source, e.g. `[can_fd_basics.md]`. Unchanged from before.
+2. **General knowledge** — no retrieved chunk covers the question, but the *top* retrieval score
+   clears the stricter `DOMAIN_SCORE` floor — i.e. the question reads as clearly on-topic for CAN
+   bus / embedded firmware, just not something the corpus discusses. The model may then answer
+   from its own general engineering knowledge, prefixed with `[General knowledge — not from your
+   documents]` and never cited. Disable this tier with `RAG_GENERAL_KNOWLEDGE=0` to restore the
+   original strict grounded/refuse-only behavior.
+3. **Refusal** — nothing clears the floor, or the question is off-topic / genuinely unanswerable,
+   so the model replies with the exact refusal string. The domain gate only ever *adds* a labeled
+   fallback for on-topic gaps — it never lets the model fabricate an answer to something outside
+   CAN bus / embedded firmware.
+
 - **Interface:** CLI (`src/cli.py`) and Streamlit (`app_streamlit.py`).
 - **Pipeline:** `src/pipeline.py` → `answer_query(question)` = retrieve + generate + cite.
 - **Data:** `data/kb.sqlite` — chunk text + L2-normalized float32 embeddings (SQLite only, no
@@ -130,37 +145,49 @@ python -m src.cli --no-stream   # print each answer at once instead of streaming
 Answers **stream token-by-token** by default, so a long/slow reply appears as it's generated
 instead of after a blank wait (disable with `--no-stream` or `RAG_STREAM=0`).
 
-Greetings ("hi", "merhaba"), thanks, and "what can you do?" get a friendly reply instead of a
-refusal — matched exactly (never as a substring), so real questions are never intercepted and
-these never touch the grounded pipeline or the conversation memory.
+Greetings ("hi", "hey", "howdy", ...), "how are you", thanks, and "what can you do?" get a
+friendly, **English-only** reply instead of a refusal — matched exactly (never as a substring),
+so real questions are never intercepted and these never touch the grounded pipeline or the
+conversation memory.
 
 The CLI **remembers the conversation**, so follow-ups work ("explain that", "what about at
 250 kbps?" — the previous question is folded into retrieval when a follow-up is elliptical).
-In-session commands: `:short` / `:explain` to switch answer mode, `:reset` to forget the
-conversation, `:help` for the list. Type `quit` or submit an empty line to exit. Example:
+In-session commands: `:short` / `:explain` to switch answer mode, `:reset` (`:clear`) to forget
+the conversation, `:examples` (`:ex`) to print the sample questions from `EXAMPLE_QUESTIONS`,
+`:help` for the list. Type `quit` or submit an empty line to exit. Example:
 
 ```
 Q[short]> What is the maximum CAN bus length at 500 kbps?
 About 100 meters at 500 kbit/s. [can_2_0_basics.md]
 Sources: ['can_2_0_basics.md']
-(2.3s · short · top match 0.71)
+(2.3s · short · grounded · top match 0.71)
 
 Q[short]> :explain
 [mode: explain]
 
+Q[explain]> How do I choose a watchdog timeout for a safety-critical ECU?
+[General knowledge — not from your documents] ...
+(i) General knowledge — not grounded in your documents.
+Sources: []
+(1.8s · explain · general · top match 0.31)
+
 Q[explain]> What's the WiFi setup procedure?
 I don't have that information in the provided documents.
 Sources: []
-(0.1s · explain · top match 0.09)
+(0.1s · explain · refusal · top match 0.09)
 ```
 
-Each answer shows how long it took, the mode, and the best retrieval score, so you can see when
-a match is weak (and why an off-topic question was refused). See **Answer modes** and
-**Tuning retrieval** below.
+Each answer shows how long it took, the mode, the answer **kind** (`grounded` / `general` /
+`refusal`), and the best retrieval score, so you can see when a match is weak (and why an
+off-topic question was refused) or when an answer came from the general-knowledge tier instead of
+the corpus. Output is colorized (green/amber/dim by kind, green/yellow/red by score) when stdout
+is an interactive terminal — auto-disabled when piped/captured, or by setting `NO_COLOR`. See
+**Answer modes** and **Tuning retrieval** below.
 
 ### Answer modes
 
-Two styles of the same grounded, cited, refuse-when-unknown answer:
+Two response *styles*, orthogonal to the answer *tier* (grounded / general knowledge / refusal —
+see **How it works**):
 
 - **short** (default) — a direct, definite answer in one or two sentences.
 - **explain** — a fuller answer that states the result then explains the relevant details from
@@ -169,6 +196,11 @@ Two styles of the same grounded, cited, refuse-when-unknown answer:
 Switch with `--mode` at launch, `:short` / `:explain` in the CLI, or the sidebar radio in
 Streamlit. Set the default with `RAG_MODE`. The exact-refusal contract holds in both modes.
 
+The **general-knowledge tier** (see **How it works** above) applies in both modes too — `short`
+still gives a direct sentence or two, `explain` still gives a fuller write-up — the only
+difference from a grounded answer is the `[General knowledge — not from your documents]` prefix
+and the absence of a citation.
+
 ### Streamlit
 
 ```bash
@@ -176,10 +208,15 @@ streamlit run app_streamlit.py
 ```
 
 The main pane is a **chat with memory** — ask a question, then follow up ("explain that")
-and it uses the conversation so far. Answers **stream in live**. Each answer shows its sources,
-mode, latency, and an expander with the retrieved chunks + scores. The sidebar has the
-**answer-mode** selector (short / explain) and a **Clear conversation** button. The Foundry
-client and KB are cached, so each query is fast.
+and it uses the conversation so far. Before the first question, it shows a row of clickable
+**example-question chips** (from `config.EXAMPLE_QUESTIONS`) so you can try the assistant without
+typing. Answers **stream in live**. Each answer shows its sources, mode, latency, and an expander
+with the retrieved chunks, each annotated with its similarity score and a progress bar. A
+**general-knowledge** answer (see **How it works**) shows an amber warning banner in place of
+sources, so it's never mistaken for a cited, corpus-grounded answer. The sidebar has the
+**answer-mode** selector (short / explain), a **Clear conversation** button, live **Documents** /
+**Chunks** metrics for the indexed corpus, and a **"How it works"** expander summarizing the
+three answer tiers. The Foundry client and KB are cached, so each query is fast.
 
 **Upload documents (sidebar).** Drop embedded-systems **PDF / Markdown / text** files into the
 uploader and click *Add to knowledge base*. Each file's text is extracted (PDFs are converted
@@ -266,9 +303,28 @@ the per-chunk scores under `--debug`):
   `setx RAG_MIN_SCORE 0.3` (typical strict range 0.25–0.35).
 - If legitimate questions get wrongly refused, **lower** it (e.g. `0.05`, or `0` to disable).
 
-The default is a conservative `0.1`. Also tunable: `RAG_CHAT_MODEL`, `RAG_EMBED_MODEL`,
-`RAG_MODE` (short/explain), `RAG_HISTORY_TURNS`, `RAG_STREAM` (0 to disable streaming),
-`RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`, `RAG_DB_PATH`.
+The default is a conservative `0.1`.
+
+A second, stricter floor gates the **general-knowledge tier** (see **How it works**):
+`DOMAIN_SCORE` (default `0.25`, override `RAG_DOMAIN_SCORE`) is the top-match score above which a
+question is considered clearly on-topic enough to let the model answer from general engineering
+knowledge when the corpus itself doesn't cover it. It's deliberately set above `MIN_SCORE` —
+`MIN_SCORE` only decides whether a chunk is worth feeding to the model at all, while
+`DOMAIN_SCORE` gates the stronger, uncited claim "this question is clearly about CAN bus /
+embedded firmware." In practice an on-topic question's top match tends to land around ~0.5–0.7,
+while an off-topic one stays below ~0.1, so the default sits comfortably in the gap.
+
+- **Raise** `RAG_DOMAIN_SCORE` to make the general-knowledge fallback stricter (only the most
+  confidently on-topic questions get it).
+- **Lower** it to offer the fallback more readily.
+- Set `RAG_GENERAL_KNOWLEDGE=0` to disable the tier entirely and restore the original strict
+  grounded/refuse-only behavior — covered questions behave exactly as before either way, and
+  off-topic questions are always refused regardless of this setting.
+
+Also tunable: `RAG_CHAT_MODEL`, `RAG_EMBED_MODEL`, `RAG_MODE` (short/explain), `RAG_HISTORY_TURNS`,
+`RAG_STREAM` (0 to disable streaming), `RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`,
+`RAG_DB_PATH`, `RAG_GENERAL_KNOWLEDGE` (0 to disable the general-knowledge tier), `RAG_DOMAIN_SCORE`
+(default `0.25`; the on-topic gate for that tier).
 
 ---
 
