@@ -11,7 +11,7 @@ from contextlib import redirect_stdout
 
 import pytest
 
-from src import cli, foundry_client
+from src import cli, config, foundry_client
 
 
 class _FakeAnswer:
@@ -23,12 +23,24 @@ class _FakeAnswer:
         self.elapsed_s = 0.5
         self.top_score = 0.72
         self.mode = mode
+        self.kind = "grounded"
+
+
+class _FakeGeneralAnswer(_FakeAnswer):
+    """A general-knowledge (uncited, unsourced) answer, for exercising the amber notice."""
+
+    def __init__(self, question="q", mode="short"):
+        super().__init__(question=question, mode=mode)
+        self.answer = f"{config.GENERAL_LABEL} Termination resistors are typically 120 ohms."
+        self.sources = []
+        self.kind = "general"
 
 
 class _FakePipeline:
     """Records the (history, mode) of each call, for assertions. `last` = newest instance."""
 
     last: "_FakePipeline | None" = None
+    answer_cls = _FakeAnswer
 
     def __init__(self, *args, **kwargs):
         self.calls = []
@@ -40,10 +52,16 @@ class _FakePipeline:
 
     def answer(self, question, history=None, mode=None, k=3, on_token=None):
         self.calls.append({"question": question, "history": list(history or []), "mode": mode})
-        ans = _FakeAnswer(question=question, mode=mode or "short")
+        ans = self.answer_cls(question=question, mode=mode or "short")
         if on_token is not None:
             on_token(ans.answer)  # simulate streaming the whole answer
         return ans
+
+
+class _FakeGeneralPipeline(_FakePipeline):
+    """Like _FakePipeline, but every answer is a general-knowledge one."""
+
+    answer_cls = _FakeGeneralAnswer
 
 
 def _fake_inputs(seq):
@@ -145,6 +163,32 @@ def test_greeting_is_not_sent_to_the_pipeline(monkeypatch):
     out = buf.getvalue()
     assert "assistant" in out.lower()  # the friendly greeting reply was printed
     assert _FakePipeline.last.calls == []  # a greeting never reached the RAG pipeline
+
+
+def test_examples_command_lists_sample_questions(monkeypatch):
+    monkeypatch.setattr(cli, "Pipeline", _FakePipeline)
+    monkeypatch.setattr(cli.foundry_client, "warmup", lambda: None)
+    monkeypatch.setattr(builtins, "input", _fake_inputs([":examples", "quit"]))
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.run()
+    out = buf.getvalue()
+    assert config.EXAMPLE_QUESTIONS[0] in out  # at least the first sample question is listed
+    assert _FakePipeline.last.calls == []  # :examples never reaches the pipeline
+
+
+def test_general_answer_shows_notice_and_kind(monkeypatch):
+    monkeypatch.setattr(cli, "Pipeline", _FakeGeneralPipeline)
+    monkeypatch.setattr(cli.foundry_client, "warmup", lambda: None)
+    monkeypatch.setattr(builtins, "input", _fake_inputs(["what resistor value is used?", "quit"]))
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.run()
+    out = buf.getvalue()
+    assert "General knowledge — not grounded in your documents" in out
+    assert "general" in out  # the kind token appears in the stats line
 
 
 def test_streaming_prints_answer_once(monkeypatch):

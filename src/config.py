@@ -83,6 +83,41 @@ TEMPERATURE = 0.1
 # The exact string the model must emit when the answer is not in the corpus (spec §9).
 REFUSAL_TEXT = "I don't have that information in the provided documents."
 
+# The prefix a general-knowledge answer (not grounded in the corpus) must start with, so the
+# UI/pipeline can tell it apart from a grounded, cited answer at a glance.
+GENERAL_LABEL = "[General knowledge — not from your documents]"
+
+
+def is_general_answer(text: str) -> bool:
+    """True if an answer is a labeled general-knowledge answer (tolerant of minor wording)."""
+    return (text or "").lstrip().lower().startswith("[general knowledge")
+
+
+# Master switch for the general-knowledge tier. On by default; set RAG_GENERAL_KNOWLEDGE=0 to
+# restore the old strict grounded/refuse-only behavior.
+GENERAL_KNOWLEDGE_ENABLED = os.environ.get("RAG_GENERAL_KNOWLEDGE", "1").strip().lower() not in {
+    "0", "false", "no",
+}
+
+# Cosine floor above which a question is considered "in-domain enough" to let the model answer
+# from general engineering knowledge when the corpus doesn't cover it. Deliberately set ABOVE
+# MIN_SCORE: MIN_SCORE only decides whether a chunk is worth feeding to the model at all, while
+# DOMAIN_SCORE gates a stronger claim -- "this question is clearly about CAN bus / embedded
+# firmware" -- before we let the model speak without a citation. In practice (see README) an
+# on-topic question's top match tends to land around ~0.5-0.7, while an off-topic one stays
+# below ~0.1, so 0.25 sits comfortably in the gap. Override: RAG_DOMAIN_SCORE.
+DOMAIN_SCORE = float(os.environ.get("RAG_DOMAIN_SCORE", "0.25"))
+
+# Starter questions grounded in the sample corpus, for UI "try one of these" affordances.
+EXAMPLE_QUESTIONS = [
+    "What is the maximum bus length for CAN 2.0 at 500 kbps?",
+    "How many data bytes can a CAN FD frame carry?",
+    "What causes a node to go bus-off?",
+    "How does the sample point relate to CAN bit timing on an STM32?",
+    "What is a PGN in J1939?",
+    "What is a PDO in CANopen?",
+]
+
 # --------------------------------------------------------------------------- #
 # Answer modes: same grounded/refusal contract, different style + length.
 # --------------------------------------------------------------------------- #
@@ -112,20 +147,39 @@ def mode_config(mode: str | None) -> dict:
     return ANSWER_MODES.get((mode or DEFAULT_MODE), ANSWER_MODES[DEFAULT_MODE])
 
 
-def system_prompt(mode: str | None = None) -> str:
+def system_prompt(mode: str | None = None, allow_general: bool = False) -> str:
     """Build the system prompt for a given answer mode.
 
     The exact-refusal rule is stated last (recency) so it holds in both modes — the style
     directive only shapes how *grounded* answers read, never whether to refuse.
+
+    `allow_general` opens a third tier: when the context doesn't have the answer but the
+    question is clearly on-topic, the model may answer from general engineering knowledge,
+    labeled and uncited. It defaults to False so every existing caller (and `SYSTEM_PROMPT`
+    below) keeps the original strict grounded/refuse-only prompt unchanged.
     """
     minfo = mode_config(mode)
+    if not allow_general:
+        return (
+            "You are an offline engineering assistant for CAN bus and embedded firmware topics.\n"
+            "Answer ONLY using the provided context. Do not use outside knowledge.\n"
+            f"{minfo['instruction']}\n"
+            "When you use information, cite the source document name in square brackets, "
+            "e.g. [can_fd_basics.md].\n"
+            f'If the answer is not in the context, reply exactly: "{REFUSAL_TEXT}"'
+        )
     return (
         "You are an offline engineering assistant for CAN bus and embedded firmware topics.\n"
-        "Answer ONLY using the provided context. Do not use outside knowledge.\n"
+        "Prefer answering using the provided CONTEXT.\n"
         f"{minfo['instruction']}\n"
-        "When you use information, cite the source document name in square brackets, "
-        "e.g. [can_fd_basics.md].\n"
-        f'If the answer is not in the context, reply exactly: "{REFUSAL_TEXT}"'
+        "When you use information from the context, cite the source document name in square "
+        "brackets, e.g. [can_fd_basics.md].\n"
+        "If the CONTEXT does not contain the answer but the question is clearly about CAN bus "
+        "or embedded firmware, you may answer from your own general engineering knowledge "
+        f'instead. In that case, begin the answer with exactly "{GENERAL_LABEL}" and do not '
+        "cite any source.\n"
+        "If you don't know, or the question is not about CAN bus or embedded firmware, reply "
+        f'exactly: "{REFUSAL_TEXT}"'
     )
 
 

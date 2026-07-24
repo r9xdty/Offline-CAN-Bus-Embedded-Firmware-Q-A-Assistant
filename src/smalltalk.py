@@ -15,19 +15,25 @@ from typing import Optional
 GREETINGS = {
     "hi", "hii", "hiya", "hey", "hello", "helo", "yo", "sup", "howdy",
     "good morning", "good afternoon", "good evening", "gm",
-    # Turkish greetings
-    "selam", "merhaba", "gunaydin", "günaydın", "iyi aksamlar", "iyi akşamlar",
+    "hey there", "hello there", "morning", "good day", "greetings",
 }
 
 THANKS = {
     "thanks", "thank you", "thank u", "thx", "ty", "cheers", "appreciated",
-    "tesekkurler", "teşekkürler", "tesekkur ederim", "teşekkür ederim", "sagol", "sağ ol",
+    "thanks a lot", "many thanks", "thank you so much", "thanks so much",
+    "much appreciated", "thanks a bunch",
 }
 
 META = {
     "what can you do", "what do you do", "who are you", "what are you",
     "help", "what is this", "what can i ask", "what can i ask you",
     "capabilities", "how do you work", "what do you know",
+    "what topics do you cover", "what can you help with", "what can you help me with",
+    "how does this work", "how do i use this", "what are your capabilities",
+}
+
+HOWAREYOU = {
+    "how are you", "how are you doing", "how r u", "hows it going", "how is it going",
 }
 
 _GREETING_REPLY = (
@@ -40,6 +46,11 @@ _META_REPLY = (
     "source citations, and I say when something isn't in them. Topics in the starter corpus: "
     "CAN 2.0, CAN FD, error handling, STM32 bit timing, J1939, CANopen, transceivers — and you "
     "can upload your own PDFs. In the CLI, type :help for commands."
+)
+_HOWAREYOU_REPLY = (
+    "Doing well, thanks for asking! I'm an offline CAN-bus / embedded-firmware assistant — go "
+    'ahead and ask me something grounded in your documents, e.g. "What is the maximum CAN bus '
+    'length at 500 kbps?"'
 )
 
 
@@ -59,4 +70,6 @@ def reply(question: str) -> Optional[str]:
         return _THANKS_REPLY
     if q in META:
         return _META_REPLY
+    if q in HOWAREYOU:
+        return _HOWAREYOU_REPLY
     return None

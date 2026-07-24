@@ -215,6 +215,21 @@ def test_generate_answer_uses_chat_fn():
     assert "100 meters" in out
 
 
+def test_generate_answer_system_prompt_reflects_allow_general():
+    chunks = [_chunk("can_2_0_basics.md", "Max length at 500 kbps is about 100 meters.")]
+    captured: dict = {}
+
+    def fake_chat(messages: List[dict]) -> str:
+        captured["system"] = messages[0]["content"]
+        return "About 100 meters. [can_2_0_basics.md]"
+
+    generate.generate_answer("q", chunks, chat_fn=fake_chat, allow_general=True)
+    assert config.GENERAL_LABEL in captured["system"]
+
+    generate.generate_answer("q", chunks, chat_fn=fake_chat, allow_general=False)
+    assert config.GENERAL_LABEL not in captured["system"]
+
+
 # --------------------------------------------------------------------------- #
 # Answer modes + conversation memory
 # --------------------------------------------------------------------------- #
@@ -350,6 +365,47 @@ def test_answer_reports_latency_and_top_score(tmp_path):
     ans = pipe.answer("length at 500 kbps")
     assert ans.elapsed_s >= 0.0
     assert ans.top_score is not None and ans.top_score > 0
+
+
+def test_pipeline_general_knowledge_answer_is_labeled_and_uncited(tmp_path, monkeypatch):
+    # Open the domain gate unconditionally so any relevant question qualifies.
+    monkeypatch.setattr(config, "DOMAIN_SCORE", 0.0)
+
+    def chat(messages: List[dict]) -> str:
+        return config.GENERAL_LABEL + " CAN uses differential signaling."
+
+    pipe = _pipeline_with(tmp_path, chat)
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.kind == "general"
+    assert ans.is_general
+    assert ans.sources == []
+    assert config.GENERAL_LABEL in ans.answer
+
+
+def test_pipeline_general_knowledge_disabled_falls_back(tmp_path, monkeypatch):
+    # Even with the domain gate wide open, the master switch off must restore old behavior.
+    monkeypatch.setattr(config, "GENERAL_KNOWLEDGE_ENABLED", False)
+    monkeypatch.setattr(config, "DOMAIN_SCORE", 0.0)
+
+    pipe = _pipeline_with(tmp_path, lambda m: config.REFUSAL_TEXT)
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.is_refusal
+    assert ans.kind == "refusal"
+
+
+def test_pipeline_domain_gate_keeps_strict_prompt_when_below_floor(tmp_path, monkeypatch):
+    # An unreachable domain floor means allow_general stays False -> the strict prompt (no
+    # general-knowledge instructions) must be what's actually sent to the model.
+    monkeypatch.setattr(config, "DOMAIN_SCORE", 2.0)
+
+    def chat(messages: List[dict]) -> str:
+        assert config.GENERAL_LABEL not in messages[0]["content"]
+        return "The maximum length is about 100 meters. [length_doc.md]"
+
+    pipe = _pipeline_with(tmp_path, chat)
+    ans = pipe.answer("length at 500 kbps")
+    assert ans.kind == "grounded"
+    assert "length_doc.md" in ans.sources
 
 
 def test_pdf_citation_is_recognized(tmp_path):

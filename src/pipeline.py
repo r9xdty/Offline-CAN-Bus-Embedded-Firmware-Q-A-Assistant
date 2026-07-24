@@ -47,10 +47,15 @@ class Answer:
     chunks: List[RetrievedChunk] = field(default_factory=list)
     elapsed_s: float = 0.0
     mode: str = ""
+    kind: str = "grounded"  # "grounded" | "general" | "refusal"
 
     @property
     def is_refusal(self) -> bool:
         return self.answer.strip() == config.REFUSAL_TEXT
+
+    @property
+    def is_general(self) -> bool:
+        return self.kind == "general"
 
     @property
     def top_score(self) -> Optional[float]:
@@ -126,19 +131,40 @@ class Pipeline:
                 answer=config.REFUSAL_TEXT,
                 elapsed_s=time.perf_counter() - start,
                 mode=mode,
+                kind="refusal",
             )
 
         retrieved = self.retriever.retrieve(_retrieval_query(question, history), k=k)
         # Keep only chunks that clear the similarity floor; feed just those to the model.
         relevant = [c for c in retrieved if c.score >= config.MIN_SCORE]
+        # The general-knowledge tier only opens when the question is relevant enough to have
+        # SOME context to attempt first, AND the top match clears the (stricter) domain floor --
+        # i.e. the question reads as clearly on-topic, not merely a weak keyword overlap.
+        top = max((c.score for c in retrieved), default=None)
+        allow_general = (
+            bool(relevant)
+            and config.GENERAL_KNOWLEDGE_ENABLED
+            and top is not None
+            and top >= config.DOMAIN_SCORE
+        )
         text = generate.generate_answer(
             question, relevant, history=history, mode=mode,
-            chat_fn=self._chat_fn, on_token=on_token,
+            chat_fn=self._chat_fn, on_token=on_token, allow_general=allow_general,
         ).strip()
 
-        if text == config.REFUSAL_TEXT or not relevant:
+        if text == config.REFUSAL_TEXT:
+            kind = "refusal"
             sources: List[str] = []
+        elif config.is_general_answer(text):
+            kind = "general"
+            sources = []
+        elif not relevant:
+            # Defensive: shouldn't normally happen (no relevant chunks -> generate_answer
+            # refuses before calling the model), but keep classification airtight either way.
+            kind = "refusal"
+            sources = []
         else:
+            kind = "grounded"
             # Prefer sources the model actually cited; fall back to the chunks we used.
             cited = _unique(re.findall(_CITATION, text))
             used = _unique([c.source for c in relevant])
@@ -151,6 +177,7 @@ class Pipeline:
             chunks=retrieved,  # show every retrieved chunk (with scores) for transparency
             elapsed_s=time.perf_counter() - start,
             mode=mode,
+            kind=kind,
         )
 
 
