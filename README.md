@@ -39,7 +39,11 @@ Every answer falls into one of **three tiers**, decided by the retrieval scores:
    bus / embedded firmware, just not something the corpus discusses. The model may then answer
    from its own general engineering knowledge, prefixed with `[General knowledge — not from your
    documents]` and never cited. Disable this tier with `RAG_GENERAL_KNOWLEDGE=0` to restore the
-   original strict grounded/refuse-only behavior.
+   original strict grounded/refuse-only behavior. Enabling this tier does **not** loosen fidelity
+   on covered questions: the prompt still requires the model to answer *only* from the context —
+   preserving its exact terms, names, and numeric values, and citing the source — whenever the
+   context actually has the answer. The general-knowledge fallback only ever triggers on a
+   genuine context miss, never as a substitute for a grounded answer that's already available.
 3. **Refusal** — nothing clears the floor, or the question is off-topic / genuinely unanswerable,
    so the model replies with the exact refusal string. The domain gate only ever *adds* a labeled
    fallback for on-topic gaps — it never lets the model fabricate an answer to something outside
@@ -152,9 +156,13 @@ conversation memory.
 
 The CLI **remembers the conversation**, so follow-ups work ("explain that", "what about at
 250 kbps?" — the previous question is folded into retrieval when a follow-up is elliptical).
-In-session commands: `:short` / `:explain` to switch answer mode, `:reset` (`:clear`) to forget
-the conversation, `:examples` (`:ex`) to print the sample questions from `EXAMPLE_QUESTIONS`,
-`:help` for the list. Type `quit` or submit an empty line to exit. Example:
+In-session commands: `:short` / `:explain` to switch answer mode, `:general on` / `:general off`
+(bare `:general` flips it) to toggle the general-knowledge fallback tier live for the rest of the
+session — no restart or env var needed, `:reset` (`:clear`) to forget the conversation,
+`:examples` (`:ex`) to print the sample questions from `EXAMPLE_QUESTIONS`, `:help` for the list.
+The startup line reports the tier's initial state (from `RAG_GENERAL_KNOWLEDGE`), e.g.
+`Ready — 41 chunks indexed. Mode: short. General knowledge: on.` Type `quit` or submit an empty
+line to exit. Example:
 
 ```
 Q[short]> What is the maximum CAN bus length at 500 kbps?
@@ -214,9 +222,21 @@ typing. Answers **stream in live**. Each answer shows its sources, mode, latency
 with the retrieved chunks, each annotated with its similarity score and a progress bar. A
 **general-knowledge** answer (see **How it works**) shows an amber warning banner in place of
 sources, so it's never mistaken for a cited, corpus-grounded answer. The sidebar has the
-**answer-mode** selector (short / explain), a **Clear conversation** button, live **Documents** /
+**answer-mode** selector (short / explain), a **General-knowledge fallback** toggle (live on/off,
+mirrors `RAG_GENERAL_KNOWLEDGE` but takes effect immediately without restarting the app), a
+**Clear conversation** button that clears the active chat's messages, live **Documents** /
 **Chunks** metrics for the indexed corpus, and a **"How it works"** expander summarizing the
 three answer tiers. The Foundry client and KB are cached, so each query is fast.
+
+**Conversations (sidebar).** The app manages multiple, independent chat histories: **New chat**
+starts a fresh, empty conversation and makes it current; a radio list switches between past
+chats, each labeled by its first question (or "New chat" until one is asked); **Delete current
+chat** removes the active conversation, falling back to the most recently created one left, or
+opening a new empty one if none remain. Every conversation — questions, answers, sources, mode,
+latency, and retrieved chunks — is saved to `data/chats.json` after each turn, so **switching
+chats or restarting the app never loses history**. This is separate from the document knowledge
+base: clearing or deleting a chat only affects that conversation's messages, not the indexed
+corpus in `data/kb.sqlite`.
 
 **Upload documents (sidebar).** Drop embedded-systems **PDF / Markdown / text** files into the
 uploader and click *Add to knowledge base*. Each file's text is extracted (PDFs are converted
@@ -321,10 +341,16 @@ while an off-topic one stays below ~0.1, so the default sits comfortably in the 
   grounded/refuse-only behavior — covered questions behave exactly as before either way, and
   off-topic questions are always refused regardless of this setting.
 
+`RAG_GENERAL_KNOWLEDGE` sets the tier's default at process startup only — it can also be flipped
+live, per session, without restarting: the CLI's `:general on` / `:general off` (bare `:general`
+toggles) and the Streamlit sidebar's **General-knowledge fallback** toggle both override the env
+var's value for that running session via `Pipeline.answer(..., general_enabled=...)`.
+
 Also tunable: `RAG_CHAT_MODEL`, `RAG_EMBED_MODEL`, `RAG_MODE` (short/explain), `RAG_HISTORY_TURNS`,
 `RAG_STREAM` (0 to disable streaming), `RAG_REQUEST_TIMEOUT`, `FOUNDRY_LOCAL_ENDPOINT`,
 `RAG_DB_PATH`, `RAG_GENERAL_KNOWLEDGE` (0 to disable the general-knowledge tier), `RAG_DOMAIN_SCORE`
-(default `0.25`; the on-topic gate for that tier).
+(default `0.25`; the on-topic gate for that tier), `RAG_CHATS_PATH` (default `data/chats.json`;
+where the Streamlit UI persists its multi-conversation chat history).
 
 ---
 
@@ -426,7 +452,8 @@ integration changes.
 ├─ .github/workflows/ci.yml   # runs the offline test suite on push / PR
 ├─ data/
 │  ├─ raw/                 # source documents (.md / .txt)
-│  └─ kb.sqlite            # generated: chunks + embeddings
+│  ├─ kb.sqlite            # generated: chunks + embeddings
+│  └─ chats.json           # generated: Streamlit multi-conversation history (gitignored)
 ├─ src/
 │  ├─ config.py            # model IDs, endpoint, chunk params, top_k, ctx limit, prompt, paths
 │  ├─ foundry_client.py    # Foundry Local server (HTTP): chat (iGPU) + embeddings (NVIDIA)
@@ -436,6 +463,7 @@ integration changes.
 │  ├─ retrieve.py          # embed query → cosine over stored vectors → top-K chunks
 │  ├─ generate.py          # build grounded prompt + call chat → answer
 │  ├─ pipeline.py          # answer_query(question): retrieve + generate + cite
+│  ├─ conversations.py     # multi-conversation persistence for the Streamlit UI (data/chats.json)
 │  ├─ smalltalk.py         # non-grounded greeting / "what can you do?" replies
 │  └─ cli.py               # Phase 1 CLI
 ├─ app_streamlit.py        # Phase 2 web UI (Q&A + document upload)

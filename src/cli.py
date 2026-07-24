@@ -6,6 +6,7 @@
 
 In-session commands:
     :short / :explain    switch answer mode
+    :general on / off    toggle the general-knowledge fallback tier (bare :general flips it)
     :reset (:clear)      forget the conversation so far
     :examples (:ex)      show sample questions
     :help                show commands
@@ -67,6 +68,7 @@ GOODBYE_MESSAGES = ["Bye", "hadi sende sg", "Adamsin Quershma", "Gorusuruz knk",
 _HELP = (
     "Commands:\n"
     "  :short / :explain   switch answer mode (short = 1-2 sentences, explain = fuller)\n"
+    "  :general on/off     toggle the general-knowledge fallback (bare :general flips it)\n"
     "  :reset (:clear)     forget the conversation so far\n"
     "  :examples (:ex)     show sample questions\n"
     "  :help               show this help\n"
@@ -149,8 +151,12 @@ def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> No
     except Exception as exc:  # noqa: BLE001 - non-fatal; the first query will surface details
         print(f"  (warm-up skipped: {exc})", file=sys.stderr)
 
+    general_on = config.GENERAL_KNOWLEDGE_ENABLED
     print(f"Chat model: {config.CHAT_MODEL_ID}  ·  Embedding: {config.EMBED_MODEL_ID}")
-    print(f"Ready — {pipeline.size} chunks indexed. Mode: {mode}. Type :help for commands.")
+    print(
+        f"Ready — {pipeline.size} chunks indexed. Mode: {mode}. "
+        f"General knowledge: {'on' if general_on else 'off'}. Type :help for commands."
+    )
     print("Tip: type :examples to see sample questions, :help for commands.\n")
 
     history: List[Tuple[str, str]] = []
@@ -163,7 +169,22 @@ def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> No
         if not raw or raw.lower() in QUIT_WORDS:
             break
         if raw.startswith(":"):
-            mode = _handle_command(raw[1:].strip().lower(), mode, history)
+            cmd = raw[1:].strip().lower()
+            if cmd == "general" or cmd.startswith("general "):
+                arg = cmd[len("general"):].strip()
+                if arg in ("", "toggle"):
+                    general_on = not general_on
+                elif arg in ("on", "true", "1"):
+                    general_on = True
+                elif arg in ("off", "false", "0"):
+                    general_on = False
+                else:
+                    print(f"[unknown ':general' argument '{arg}' — try 'on' or 'off']")
+                    continue
+                state = "on" if general_on else "off"
+                print(_c(f"[general knowledge: {state}]", AMBER if general_on else DIM))
+                continue
+            mode = _handle_command(cmd, mode, history)
             continue
         chit_chat = smalltalk.reply(raw)
         if chit_chat is not None:
@@ -173,10 +194,12 @@ def run(debug: bool = False, mode: str | None = None, stream: bool = True) -> No
         if stream:
             print()  # newline before the streamed answer
             on_token = lambda tok: print(tok, end="", flush=True)  # noqa: E731
-            result = pipeline.answer(raw, history=history, mode=mode, on_token=on_token)
+            result = pipeline.answer(
+                raw, history=history, mode=mode, on_token=on_token, general_enabled=general_on,
+            )
             print("\n")  # close the streamed answer
         else:
-            result = pipeline.answer(raw, history=history, mode=mode)
+            result = pipeline.answer(raw, history=history, mode=mode, general_enabled=general_on)
             print(f"\n{result.answer}")
         if result.kind == "general":
             print(_c(_GENERAL_NOTICE, AMBER))

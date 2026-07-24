@@ -50,8 +50,13 @@ class _FakePipeline:
     def size(self) -> int:
         return 5
 
-    def answer(self, question, history=None, mode=None, k=3, on_token=None):
-        self.calls.append({"question": question, "history": list(history or []), "mode": mode})
+    def answer(self, question, history=None, mode=None, k=3, on_token=None, general_enabled=None):
+        self.calls.append({
+            "question": question,
+            "history": list(history or []),
+            "mode": mode,
+            "general_enabled": general_enabled,
+        })
         ans = self.answer_cls(question=question, mode=mode or "short")
         if on_token is not None:
             on_token(ans.answer)  # simulate streaming the whole answer
@@ -189,6 +194,27 @@ def test_general_answer_shows_notice_and_kind(monkeypatch):
     out = buf.getvalue()
     assert "General knowledge — not grounded in your documents" in out
     assert "general" in out  # the kind token appears in the stats line
+
+
+def test_general_command_toggles_and_is_passed_to_pipeline(monkeypatch):
+    monkeypatch.setattr(cli, "Pipeline", _FakePipeline)
+    monkeypatch.setattr(cli.foundry_client, "warmup", lambda: None)
+    monkeypatch.setattr(
+        builtins, "input",
+        _fake_inputs([":general off", "a question", ":general on", "another", "quit"]),
+    )
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli.run()
+    out = buf.getvalue()
+
+    calls = _FakePipeline.last.calls
+    assert [c["question"] for c in calls] == ["a question", "another"]
+    assert calls[0]["general_enabled"] is False
+    assert calls[1]["general_enabled"] is True
+    assert "[general knowledge: off]" in out
+    assert "[general knowledge: on]" in out
 
 
 def test_streaming_prints_answer_once(monkeypatch):

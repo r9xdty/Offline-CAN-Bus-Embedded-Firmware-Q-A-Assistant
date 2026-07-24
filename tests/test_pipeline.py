@@ -408,6 +408,36 @@ def test_pipeline_domain_gate_keeps_strict_prompt_when_below_floor(tmp_path, mon
     assert "length_doc.md" in ans.sources
 
 
+def test_pipeline_general_enabled_override_disables(tmp_path, monkeypatch):
+    # Env flag says general knowledge is on, but a per-call override of False must win.
+    monkeypatch.setattr(config, "GENERAL_KNOWLEDGE_ENABLED", True)
+    monkeypatch.setattr(config, "DOMAIN_SCORE", 0.0)
+    captured: dict = {}
+
+    def chat(messages: List[dict]) -> str:
+        captured["system"] = messages[0]["content"]
+        return config.GENERAL_LABEL + " CAN uses differential signaling."
+
+    pipe = _pipeline_with(tmp_path, chat)
+    pipe.answer("length at 500 kbps", general_enabled=False)
+    assert config.GENERAL_LABEL not in captured["system"]
+
+
+def test_pipeline_general_enabled_override_enables(tmp_path, monkeypatch):
+    # Env flag says general knowledge is off, but a per-call override of True must win.
+    monkeypatch.setattr(config, "GENERAL_KNOWLEDGE_ENABLED", False)
+    monkeypatch.setattr(config, "DOMAIN_SCORE", 0.0)
+    captured: dict = {}
+
+    def chat(messages: List[dict]) -> str:
+        captured["system"] = messages[0]["content"]
+        return "The maximum length is about 100 meters. [length_doc.md]"
+
+    pipe = _pipeline_with(tmp_path, chat)
+    pipe.answer("length at 500 kbps", general_enabled=True)
+    assert config.GENERAL_LABEL in captured["system"]
+
+
 def test_pdf_citation_is_recognized(tmp_path):
     db = tmp_path / "kb.sqlite"
     # A PDF uploaded via the UI is stored by add_document with a .pdf source label.
