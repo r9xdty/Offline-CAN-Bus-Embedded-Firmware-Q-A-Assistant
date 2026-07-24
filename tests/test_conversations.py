@@ -197,3 +197,44 @@ def test_touch_title_leaves_custom_title_unchanged():
     }
     conversations.touch_title(conv)
     assert conv["title"] == "My custom chat name"
+
+
+# --------------------------------------------------------------------------- #
+# rename_conversation
+# --------------------------------------------------------------------------- #
+def test_rename_conversation_sets_title_and_pins_it():
+    data = conversations.empty_state()
+    conv_id = conversations.new_conversation(data)
+    conversations.rename_conversation(data, conv_id, "My renamed chat")
+    conv = conversations.current(data)
+    assert conv["title"] == "My renamed chat"
+    assert conv["title_pinned"] is True
+
+
+def test_rename_conversation_blank_title_falls_back_to_default():
+    data = conversations.empty_state()
+    conv_id = conversations.new_conversation(data, title="Something else")
+    conversations.rename_conversation(data, conv_id, "   ")
+    conv = conversations.current(data)
+    assert conv["title"] == conversations.DEFAULT_TITLE
+    assert conv["title_pinned"] is True
+
+
+def test_rename_conversation_unknown_id_is_safe_noop():
+    data = conversations.empty_state()
+    conv_id = conversations.new_conversation(data, title="Original")
+    conversations.rename_conversation(data, "not-a-real-id", "New name")
+    conv = conversations.current(data)
+    assert conv["id"] == conv_id
+    assert conv["title"] == "Original"
+    assert "title_pinned" not in conv
+
+
+def test_touch_title_leaves_renamed_title_unchanged_after_new_question():
+    data = conversations.empty_state()
+    conv_id = conversations.new_conversation(data)
+    conversations.rename_conversation(data, conv_id, "Pinned name")
+    conv = conversations.current(data)
+    conv["messages"].append({"question": "What causes bus-off?", "answer": "..."})
+    conversations.touch_title(conv)
+    assert conv["title"] == "Pinned name"

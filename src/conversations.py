@@ -113,8 +113,27 @@ def derive_title(messages: list[dict], max_len: int = 40) -> str:
     return DEFAULT_TITLE
 
 
+def rename_conversation(data: dict, conv_id: str, title: str) -> None:
+    """Set a user-chosen title on `conv_id` and pin it so `touch_title` never overwrites it.
+
+    Blank/whitespace-only `title` falls back to `DEFAULT_TITLE` (rather than leaving the
+    conversation with an empty name). Safe no-op if `conv_id` isn't present.
+    """
+    for conv in data["conversations"]:
+        if conv["id"] == conv_id:
+            conv["title"] = title.strip() or DEFAULT_TITLE
+            conv["title_pinned"] = True
+            return
+
+
 def touch_title(conversation: dict) -> None:
-    """Replace a still-default/empty title with one derived from the conversation's messages."""
+    """Replace a still-default/empty title with one derived from the conversation's messages.
+
+    No-op if the title is pinned (set explicitly via `rename_conversation`) — a manual name is
+    never auto-changed.
+    """
+    if conversation.get("title_pinned"):
+        return
     title = (conversation.get("title") or "").strip()
     if not title or title == DEFAULT_TITLE:
         conversation["title"] = derive_title(conversation["messages"])

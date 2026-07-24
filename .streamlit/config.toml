@@ -1,0 +1,9 @@
+# Streamlit theme — warm (Claude-style terracotta) accent only.
+#
+# `base` is intentionally left unset: Streamlit auto-follows the user's OS light/dark setting
+# only when `base` is not pinned. Setting `base`, `backgroundColor`, `textColor`, or
+# `secondaryBackgroundColor` here would lock the app into a single theme, so we leave them all
+# unset and let Streamlit derive a full light/dark palette around `primaryColor` automatically.
+[theme]
+primaryColor = "#C96442"
+font = "sans serif"

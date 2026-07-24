@@ -215,6 +215,14 @@ and the absence of a citation.
 streamlit run app_streamlit.py
 ```
 
+The UI is **themed**: `.streamlit/config.toml` sets a warm terracotta accent (`primaryColor =
+"#C96442"`) and deliberately leaves `base` unset so Streamlit derives a full light/dark palette
+around it and auto-follows the OS's light/dark setting rather than locking into one theme. Chat
+turns render as rounded, theme-agnostic bubbles with user/assistant avatars (🧑‍💻 / 🔧), and
+default Streamlit chrome (main menu, footer) is hidden for a cleaner look. All of it is inline CSS
+using the system font stack — no external fonts or other resources are loaded, so the app stays
+fully offline.
+
 The main pane is a **chat with memory** — ask a question, then follow up ("explain that")
 and it uses the conversation so far. Before the first question, it shows a row of clickable
 **example-question chips** (from `config.EXAMPLE_QUESTIONS`) so you can try the assistant without
@@ -229,14 +237,18 @@ mirrors `RAG_GENERAL_KNOWLEDGE` but takes effect immediately without restarting 
 three answer tiers. The Foundry client and KB are cached, so each query is fast.
 
 **Conversations (sidebar).** The app manages multiple, independent chat histories: **New chat**
-starts a fresh, empty conversation and makes it current; a radio list switches between past
-chats, each labeled by its first question (or "New chat" until one is asked); **Delete current
-chat** removes the active conversation, falling back to the most recently created one left, or
-opening a new empty one if none remain. Every conversation — questions, answers, sources, mode,
-latency, and retrieved chunks — is saved to `data/chats.json` after each turn, so **switching
-chats or restarting the app never loses history**. This is separate from the document knowledge
-base: clearing or deleting a chat only affects that conversation's messages, not the indexed
-corpus in `data/kb.sqlite`.
+starts a fresh, empty conversation and makes it current; each past chat appears as its own
+full-width button, labeled by its first question (or "New chat" until one is asked), with the
+active chat highlighted in the accent color — click a different one to switch to it. A **Chat
+name** box below the switcher lets you **rename** the active conversation; a renamed chat is
+pinned, so the auto-generated title (derived from its first question) never overwrites the name
+you chose. **Delete current chat** removes the active conversation, falling back to the most
+recently created one left, or opening a new empty one if none remain. Every conversation —
+questions, answers, sources, mode, latency, retrieved chunks, and title (including a rename) — is
+saved to `data/chats.json` after each turn or edit, so **switching chats or restarting the app
+never loses history**. This is separate from the document knowledge base: clearing, renaming, or
+deleting a chat only affects that conversation's messages/title, not the indexed corpus in
+`data/kb.sqlite`.
 
 **Upload documents (sidebar).** Drop embedded-systems **PDF / Markdown / text** files into the
 uploader and click *Add to knowledge base*. Each file's text is extracted (PDFs are converted
@@ -449,6 +461,7 @@ integration changes.
 ```
 ├─ README.md
 ├─ requirements.txt
+├─ .streamlit/config.toml     # Streamlit theme: warm terracotta accent, auto light/dark
 ├─ .github/workflows/ci.yml   # runs the offline test suite on push / PR
 ├─ data/
 │  ├─ raw/                 # source documents (.md / .txt)
@@ -463,7 +476,7 @@ integration changes.
 │  ├─ retrieve.py          # embed query → cosine over stored vectors → top-K chunks
 │  ├─ generate.py          # build grounded prompt + call chat → answer
 │  ├─ pipeline.py          # answer_query(question): retrieve + generate + cite
-│  ├─ conversations.py     # multi-conversation persistence for the Streamlit UI (data/chats.json)
+│  ├─ conversations.py     # multi-conversation persistence + rename/title-pinning (data/chats.json)
 │  ├─ smalltalk.py         # non-grounded greeting / "what can you do?" replies
 │  └─ cli.py               # Phase 1 CLI
 ├─ app_streamlit.py        # Phase 2 web UI (Q&A + document upload)
@@ -483,6 +496,8 @@ integration changes.
 - Python 3.11+
 - Microsoft Foundry Local + `foundry-local-sdk[-winml]`
 - `numpy`, `openai`, `streamlit`
+- The web UI is themed (`.streamlit/config.toml`) and fully offline — no external fonts or
+  other remote resources.
 - Target hardware for the reference setup: Windows, NVIDIA RTX 3050 Ti Laptop (4 GB VRAM),
   Intel i5-12500H (Iris Xe iGPU), 16 GB RAM. Runs on other machines with compatible Foundry
   Local model variants.
