@@ -4,9 +4,10 @@ Run with::
 
     streamlit run app_streamlit.py
 
-Left sidebar: answer mode (short / explain), a clear-conversation button, and the knowledge-base
+Left sidebar: a clear-conversation button, the conversation switcher, and the knowledge-base
 manager (upload embedded-systems PDFs / Markdown / text, see what's indexed, remove documents).
-Main pane: a chat that remembers the conversation, so follow-ups like "explain that" work.
+Main pane: an answer-mode selector (short / explain) and a chat that remembers the conversation,
+so follow-ups like "explain that" work.
 
 The Foundry client and knowledge base are cached so each query is fast. Uploading requires the
 Foundry Local server to be running (it embeds the new chunks on the NVIDIA GPU).
@@ -164,32 +165,40 @@ def _render_conversations_sidebar() -> None:
 
     convo_list = chats["conversations"]
     current_id = chats.get("current_id")
+    editing_id = st.session_state.get("editing_chat")
 
-    # One full-width button per conversation, standing in for the old radio switcher: the
-    # active chat renders as a primary (accent-colored) button, the rest as secondary.
+    # One row per conversation: a full-width switch button (standing in for the old radio
+    # switcher — active chat renders as primary/accent-colored, the rest as secondary) plus a
+    # small edit affordance that swaps the row into an inline rename text_input.
     for conv in convo_list:
         cid = conv["id"]
         title = conv.get("title") or conversations.DEFAULT_TITLE
-        label = title if len(title) <= 28 else title[:27].rstrip() + "…"
-        is_active = cid == current_id
-        if st.sidebar.button(
-            label,
-            key=f"switch_{cid}",
-            use_container_width=True,
-            type="primary" if is_active else "secondary",
-        ) and not is_active:
-            chats["current_id"] = cid
-            conversations.save(config.CHATS_PATH, chats)
-            st.rerun()
-
-    current = conversations.current(chats)
-    if current is not None:
-        current_title = current.get("title") or conversations.DEFAULT_TITLE
-        new_title = st.sidebar.text_input("Chat name", value=current_title, key=f"rename_{current['id']}")
-        if new_title != current_title and new_title.strip():
-            conversations.rename_conversation(chats, current["id"], new_title)
-            conversations.save(config.CHATS_PATH, chats)
-            st.rerun()
+        col_main, col_action = st.sidebar.columns([0.82, 0.18])
+        if cid == editing_id:
+            col_main.text_input(
+                "Chat name", value=title, key=f"edit_{cid}", label_visibility="collapsed"
+            )
+            if col_action.button("✓", key=f"save_{cid}"):
+                new_title = st.session_state.get(f"edit_{cid}", title)
+                conversations.rename_conversation(chats, cid, new_title)
+                st.session_state.editing_chat = None
+                conversations.save(config.CHATS_PATH, chats)
+                st.rerun()
+        else:
+            label = title if len(title) <= 28 else title[:27].rstrip() + "…"
+            is_active = cid == current_id
+            if col_main.button(
+                label,
+                key=f"switch_{cid}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ) and not is_active:
+                chats["current_id"] = cid
+                conversations.save(config.CHATS_PATH, chats)
+                st.rerun()
+            if col_action.button("✎", key=f"edit_btn_{cid}"):
+                st.session_state.editing_chat = cid
+                st.rerun()
 
     if st.sidebar.button("🗑 Delete current chat", use_container_width=True):
         conversations.delete_conversation(chats, current_id)
@@ -198,16 +207,12 @@ def _render_conversations_sidebar() -> None:
         st.rerun()
 
 
-def _sidebar() -> tuple[str, bool]:
-    """Render sidebar controls; return the selected (answer mode, general-knowledge toggle)."""
+def _sidebar() -> bool:
+    """Render sidebar controls; return the selected general-knowledge toggle.
+
+    (Answer mode now lives in the main pane — see `main()`.)
+    """
     st.sidebar.header("Chat")
-    mode = st.sidebar.radio(
-        "Answer mode",
-        options=list(config.ANSWER_MODES),
-        format_func=lambda m: config.ANSWER_MODES[m]["label"],
-        index=list(config.ANSWER_MODES).index(config.DEFAULT_MODE),
-        help="Short = a direct 1-2 sentence answer. Explain = a fuller, explained answer.",
-    )
     general_on = st.sidebar.toggle(
         "General-knowledge fallback",
         value=config.GENERAL_KNOWLEDGE_ENABLED,
@@ -258,7 +263,7 @@ def _sidebar() -> tuple[str, bool]:
             "- Off-topic questions are refused rather than guessed at.\n"
             "- Everything runs offline: chat on the Intel iGPU, embeddings on the NVIDIA GPU."
         )
-    return mode, general_on
+    return general_on
 
 
 def _render_turn(turn: dict) -> None:
@@ -310,7 +315,7 @@ def main() -> None:
         st.session_state.chats = conversations.load(config.CHATS_PATH)
     conversations.ensure_current(st.session_state.chats)
 
-    mode, general_on = _sidebar()
+    general_on = _sidebar()
 
     # The active conversation's message list. It's the SAME list object stored inside
     # st.session_state.chats, so appending to `messages` mutates the store in place —
@@ -325,7 +330,16 @@ def main() -> None:
         )
         return
 
-    st.caption(f"{pipeline.size} chunks indexed · mode: **{config.ANSWER_MODES[mode]['label']}**")
+    mode = st.radio(
+        "Answer mode",
+        options=list(config.ANSWER_MODES),
+        format_func=lambda m: config.ANSWER_MODES[m]["label"],
+        index=list(config.ANSWER_MODES).index(config.DEFAULT_MODE),
+        horizontal=True,
+        help="Short = a direct 1-2 sentence answer. Explain = a fuller, explained answer.",
+        key="mode_select",
+    )
+    st.caption(f"{pipeline.size} chunks indexed")
 
     if not messages:
         st.markdown("#### 👋 Ask me about CAN bus & embedded firmware")
