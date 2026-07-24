@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src import config, documents, ingest, smalltalk
+from src import config, conversations, documents, ingest, smalltalk
 from src.pipeline import Pipeline
 
 
@@ -60,8 +60,45 @@ def _handle_uploads(files) -> None:
         _refresh_pipeline()
 
 
-def _sidebar() -> str:
-    """Render sidebar controls; return the selected answer mode."""
+def _render_conversations_sidebar() -> None:
+    """Render the "Conversations" section: new-chat button, switcher, and per-chat delete.
+
+    Reads/writes `st.session_state.chats` (loaded by `main()` before `_sidebar()` runs) and
+    persists every mutation to disk so chat history survives an app restart.
+    """
+    st.sidebar.header("Conversations")
+    chats = st.session_state.chats
+
+    if st.sidebar.button("➕ New chat", use_container_width=True):
+        conversations.new_conversation(chats)
+        conversations.save(config.CHATS_PATH, chats)
+        st.rerun()
+
+    convo_list = chats["conversations"]
+    ids = [c["id"] for c in convo_list]
+    titles = {c["id"]: (c.get("title") or conversations.DEFAULT_TITLE) for c in convo_list}
+    current_id = chats.get("current_id")
+    selected = st.sidebar.radio(
+        "Chats",
+        options=ids,
+        format_func=lambda cid: titles[cid],
+        index=ids.index(current_id) if current_id in ids else 0,
+        label_visibility="collapsed",
+    )
+    if selected != current_id:
+        chats["current_id"] = selected
+        conversations.save(config.CHATS_PATH, chats)
+        st.rerun()
+
+    if st.sidebar.button("🗑 Delete current chat", use_container_width=True):
+        conversations.delete_conversation(chats, current_id)
+        conversations.ensure_current(chats)
+        conversations.save(config.CHATS_PATH, chats)
+        st.rerun()
+
+
+def _sidebar() -> tuple[str, bool]:
+    """Render sidebar controls; return the selected (answer mode, general-knowledge toggle)."""
     st.sidebar.header("Chat")
     mode = st.sidebar.radio(
         "Answer mode",
@@ -70,9 +107,19 @@ def _sidebar() -> str:
         index=list(config.ANSWER_MODES).index(config.DEFAULT_MODE),
         help="Short = a direct 1-2 sentence answer. Explain = a fuller, explained answer.",
     )
+    general_on = st.sidebar.toggle(
+        "General-knowledge fallback",
+        value=config.GENERAL_KNOWLEDGE_ENABLED,
+        help="When on, on-topic questions not covered by your corpus get a labeled "
+             "general-knowledge answer; when off, they are refused.",
+    )
     if st.sidebar.button("🧹 Clear conversation"):
-        st.session_state.messages = []
+        conversations.current(st.session_state.chats)["messages"].clear()
+        conversations.save(config.CHATS_PATH, st.session_state.chats)
         st.rerun()
+
+    st.sidebar.divider()
+    _render_conversations_sidebar()
 
     st.sidebar.divider()
     st.sidebar.header("Knowledge base")
@@ -110,7 +157,7 @@ def _sidebar() -> str:
             "- Off-topic questions are refused rather than guessed at.\n"
             "- Everything runs offline: chat on the Intel iGPU, embeddings on the NVIDIA GPU."
         )
-    return mode
+    return mode, general_on
 
 
 def _render_turn(turn: dict) -> None:
@@ -152,10 +199,16 @@ def main() -> None:
         "NVIDIA GPU (CUDA)."
     )
 
-    mode = _sidebar()
+    if "chats" not in st.session_state:
+        st.session_state.chats = conversations.load(config.CHATS_PATH)
+    conversations.ensure_current(st.session_state.chats)
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    mode, general_on = _sidebar()
+
+    # The active conversation's message list. It's the SAME list object stored inside
+    # st.session_state.chats, so appending to `messages` mutates the store in place —
+    # we still call conversations.save() after each mutation to persist it to disk.
+    messages = conversations.current(st.session_state.chats)["messages"]
 
     pipeline = get_pipeline()
     if pipeline.size == 0:
@@ -167,7 +220,7 @@ def main() -> None:
 
     st.caption(f"{pipeline.size} chunks indexed · mode: **{config.ANSWER_MODES[mode]['label']}**")
 
-    if not st.session_state.messages:
+    if not messages:
         st.markdown("**Try one of these:**")
         cols = st.columns(2)
         for i, example in enumerate(config.EXAMPLE_QUESTIONS):
@@ -175,7 +228,7 @@ def main() -> None:
                 st.session_state.pending_question = example
                 st.rerun()
 
-    for turn in st.session_state.messages:
+    for turn in messages:
         _render_turn(turn)
 
     question = st.session_state.pop("pending_question", None) or st.chat_input(
@@ -185,15 +238,14 @@ def main() -> None:
         chit_chat = smalltalk.reply(question)
         if chit_chat is not None:
             # Not a grounded turn: show it, but flag it so it's excluded from pipeline history.
-            st.session_state.messages.append(
-                {"question": question, "answer": chit_chat, "smalltalk": True}
-            )
+            messages.append({"question": question, "answer": chit_chat, "smalltalk": True})
+            conversations.save(config.CHATS_PATH, st.session_state.chats)
             st.rerun()
 
         # Memory excludes small-talk turns so a greeting can't pollute follow-up retrieval.
         history = [
             (m["question"], m["answer"])
-            for m in st.session_state.messages
+            for m in messages
             if not m.get("smalltalk")
         ]
         with st.chat_message("user"):
@@ -211,9 +263,10 @@ def main() -> None:
             result = pipeline.answer(
                 question, history=history, mode=mode,
                 on_token=_on_token if stream else None,
+                general_enabled=general_on,
             )
             placeholder.markdown(result.answer)  # final text without the cursor
-        st.session_state.messages.append(
+        messages.append(
             {
                 "question": result.question,
                 "answer": result.answer,
@@ -225,6 +278,8 @@ def main() -> None:
                 "kind": result.kind,
             }
         )
+        conversations.touch_title(conversations.current(st.session_state.chats))
+        conversations.save(config.CHATS_PATH, st.session_state.chats)
         st.rerun()
 
 

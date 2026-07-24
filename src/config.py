@@ -23,6 +23,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 DB_PATH = Path(os.environ.get("RAG_DB_PATH", DATA_DIR / "kb.sqlite"))
+# Streamlit UI conversation history (multi-chat sidebar). Generated/local, gitignored.
+CHATS_PATH = Path(os.environ.get("RAG_CHATS_PATH", DATA_DIR / "chats.json"))
 
 # --------------------------------------------------------------------------- #
 # Foundry Local model placement (full variant IDs — do not shorten)
@@ -170,16 +172,18 @@ def system_prompt(mode: str | None = None, allow_general: bool = False) -> str:
         )
     return (
         "You are an offline engineering assistant for CAN bus and embedded firmware topics.\n"
-        "Prefer answering using the provided CONTEXT.\n"
+        "If the CONTEXT contains the answer, answer using ONLY the CONTEXT. Do not use outside "
+        "knowledge and do not paraphrase away its exact terms, names, or numeric values -- "
+        "preserve them as given.\n"
         f"{minfo['instruction']}\n"
         "When you use information from the context, cite the source document name in square "
         "brackets, e.g. [can_fd_basics.md].\n"
-        "If the CONTEXT does not contain the answer but the question is clearly about CAN bus "
-        "or embedded firmware, you may answer from your own general engineering knowledge "
+        "Only if the CONTEXT does not contain the answer, and the question is clearly about CAN "
+        "bus or embedded firmware, you may answer from your own general engineering knowledge "
         f'instead. In that case, begin the answer with exactly "{GENERAL_LABEL}" and do not '
         "cite any source.\n"
-        "If you don't know, or the question is not about CAN bus or embedded firmware, reply "
-        f'exactly: "{REFUSAL_TEXT}"'
+        "Otherwise -- if you don't know, or the question is not about CAN bus or embedded "
+        f'firmware -- reply exactly: "{REFUSAL_TEXT}"'
     )
 
 

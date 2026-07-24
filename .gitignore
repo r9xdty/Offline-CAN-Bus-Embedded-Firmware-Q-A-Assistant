@@ -1,5 +1,6 @@
 # Generated knowledge base (rebuild with `python -m src.ingest`)
 data/kb.sqlite
+data/chats.json
 
 # Python
 __pycache__/

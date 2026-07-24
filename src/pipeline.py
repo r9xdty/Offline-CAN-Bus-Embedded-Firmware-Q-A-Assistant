@@ -113,12 +113,15 @@ class Pipeline:
         mode: str | None = None,
         k: int = config.TOP_K,
         on_token: Optional[Callable[[str], None]] = None,
+        general_enabled: Optional[bool] = None,
     ) -> Answer:
         """Retrieve top-`k` chunks, drop weak matches, generate a grounded answer, cite.
 
         `history` is prior (question, answer) turns for follow-up continuity; `mode` is
         "short" or "explain" (falls back to the configured default). `on_token`, if given,
-        streams each answer delta as it arrives.
+        streams each answer delta as it arrives. `general_enabled`, if given, overrides
+        `config.GENERAL_KNOWLEDGE_ENABLED` for this call only (lets the CLI/Streamlit toggle
+        the general-knowledge tier live without touching the env-driven master switch).
         """
         start = time.perf_counter()
         mode = mode or config.DEFAULT_MODE
@@ -141,9 +144,10 @@ class Pipeline:
         # SOME context to attempt first, AND the top match clears the (stricter) domain floor --
         # i.e. the question reads as clearly on-topic, not merely a weak keyword overlap.
         top = max((c.score for c in retrieved), default=None)
+        enabled = config.GENERAL_KNOWLEDGE_ENABLED if general_enabled is None else general_enabled
         allow_general = (
             bool(relevant)
-            and config.GENERAL_KNOWLEDGE_ENABLED
+            and enabled
             and top is not None
             and top >= config.DOMAIN_SCORE
         )
@@ -198,6 +202,10 @@ def answer_query(
     mode: str | None = None,
     k: int = config.TOP_K,
     on_token: Optional[Callable[[str], None]] = None,
+    general_enabled: Optional[bool] = None,
 ) -> Answer:
     """Convenience wrapper over the cached pipeline (spec §4 entry point)."""
-    return get_pipeline().answer(question, history=history, mode=mode, k=k, on_token=on_token)
+    return get_pipeline().answer(
+        question, history=history, mode=mode, k=k, on_token=on_token,
+        general_enabled=general_enabled,
+    )
