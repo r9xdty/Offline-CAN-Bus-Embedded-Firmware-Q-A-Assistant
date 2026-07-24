@@ -130,6 +130,10 @@ python -m src.cli --no-stream   # print each answer at once instead of streaming
 Answers **stream token-by-token** by default, so a long/slow reply appears as it's generated
 instead of after a blank wait (disable with `--no-stream` or `RAG_STREAM=0`).
 
+Greetings ("hi", "merhaba"), thanks, and "what can you do?" get a friendly reply instead of a
+refusal — matched exactly (never as a substring), so real questions are never intercepted and
+these never touch the grounded pipeline or the conversation memory.
+
 The CLI **remembers the conversation**, so follow-ups work ("explain that", "what about at
 250 kbps?" — the previous question is folded into retrieval when a follow-up is elliptical).
 In-session commands: `:short` / `:explain` to switch answer mode, `:reset` to forget the
@@ -217,20 +221,25 @@ chunking quality is the main retrieval-quality lever.
 
 ## Evaluation
 
-`tests/eval_set.jsonl` holds answerable and unanswerable (refusal) questions. Each item is
-either `{"expected_behavior": "answer", "must_include_any": [...]}` or
-`{"expected_behavior": "refuse"}`.
+`tests/eval_set.jsonl` holds answerable and unanswerable (refusal) questions, plus **multi-turn**
+items. Each item is one of:
+- `{"expected_behavior": "answer", "must_include_any": [...], "expect_source": "..."}`
+- `{"expected_behavior": "refuse"}`
+- multi-turn: add `"history_questions": [...]` — those are asked first (building real conversation
+  memory) and then the `"question"` is graded, so follow-up retrieval + memory are exercised.
 
 Run the full functional eval against the real pipeline (needs Foundry + the models):
 
 ```bash
-python -m tests.run_eval          # human-readable pass/fail + latency
-python -m tests.run_eval --json   # machine-readable results
+python -m tests.run_eval                 # human-readable pass/fail + latency
+python -m tests.run_eval --mode explain  # evaluate in "explain" mode (default: short)
+python -m tests.run_eval --out results.md  # also write a Markdown results table
+python -m tests.run_eval --json          # machine-readable results
 ```
 
 Targets (per the build spec): answerable questions return the right fact **with a citation**;
 out-of-corpus questions return the exact refusal string; latency ~1–3 s per answer on the
-target laptop.
+target laptop. Use `--out` to record a results table for the README/PR.
 
 ### Offline unit tests (no GPU / models needed)
 
@@ -371,6 +380,7 @@ integration changes.
 │  ├─ retrieve.py          # embed query → cosine over stored vectors → top-K chunks
 │  ├─ generate.py          # build grounded prompt + call chat → answer
 │  ├─ pipeline.py          # answer_query(question): retrieve + generate + cite
+│  ├─ smalltalk.py         # non-grounded greeting / "what can you do?" replies
 │  └─ cli.py               # Phase 1 CLI
 ├─ app_streamlit.py        # Phase 2 web UI (Q&A + document upload)
 └─ tests/
@@ -378,7 +388,8 @@ integration changes.
    ├─ run_eval.py          # eval runner (real pipeline)
    ├─ test_pipeline.py     # offline unit tests (fake embed/chat)
    ├─ test_documents.py    # offline tests: extraction + incremental upload
-   └─ test_cli.py          # offline tests: CLI loop + client error mapping
+   ├─ test_cli.py          # offline tests: CLI loop + streaming + client error mapping
+   └─ test_smalltalk.py    # offline tests: greeting / meta shortcut
 ```
 
 ---

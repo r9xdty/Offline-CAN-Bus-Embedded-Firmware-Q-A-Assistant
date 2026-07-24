@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src import config, documents, ingest
+from src import config, documents, ingest, smalltalk
 from src.pipeline import Pipeline
 
 
@@ -108,6 +108,8 @@ def _render_turn(turn: dict) -> None:
         st.write(turn["question"])
     with st.chat_message("assistant"):
         st.write(turn["answer"])
+        if turn.get("smalltalk"):
+            return  # greeting/meta reply: no sources, score, or chunk expander
         if turn["sources"]:
             st.markdown("**Sources:** " + ", ".join(f"`{s}`" for s in turn["sources"]))
         else:
@@ -150,7 +152,20 @@ def main() -> None:
 
     question = st.chat_input("Ask a CAN-bus or firmware question (follow-ups are remembered)…")
     if question and question.strip():
-        history = [(m["question"], m["answer"]) for m in st.session_state.messages]
+        chit_chat = smalltalk.reply(question)
+        if chit_chat is not None:
+            # Not a grounded turn: show it, but flag it so it's excluded from pipeline history.
+            st.session_state.messages.append(
+                {"question": question, "answer": chit_chat, "smalltalk": True}
+            )
+            st.rerun()
+
+        # Memory excludes small-talk turns so a greeting can't pollute follow-up retrieval.
+        history = [
+            (m["question"], m["answer"])
+            for m in st.session_state.messages
+            if not m.get("smalltalk")
+        ]
         with st.chat_message("user"):
             st.write(question)
         with st.chat_message("assistant"):

@@ -401,18 +401,20 @@ def test_eval_set_is_wellformed():
             assert it.get("must_include_any"), it["question"]
 
 
+class _Ans:
+    def __init__(self, answer, sources):
+        self.answer = answer
+        self.sources = sources
+
+
 def test_run_eval_with_fake_answerer():
     """Drive the full eval harness with a stub answerer to prove scoring end-to-end."""
     items = load_eval()
 
-    class _Ans:
-        def __init__(self, answer, sources):
-            self.answer = answer
-            self.sources = sources
-
-    def fake_answer(question: str) -> _Ans:
-        # Find the matching eval item and produce a trivially-passing answer.
-        item = next(i for i in items if i["question"] == question)
+    def fake_answer(question, history=None, mode=None) -> _Ans:
+        item = next((i for i in items if i["question"] == question), None)
+        if item is None:
+            return _Ans("prior-turn context answer", [])  # a history (setup) question
         if item["expected_behavior"] == "refuse":
             return _Ans(config.REFUSAL_TEXT, [])
         needle = item["must_include_any"][0]
@@ -421,3 +423,40 @@ def test_run_eval_with_fake_answerer():
 
     report = run_eval(answer_fn=fake_answer, items=items)
     assert report["passed"] == report["total"]
+
+
+def test_run_eval_multiturn_builds_history_and_passes_mode():
+    items = [
+        {
+            "history_questions": ["Q1"],
+            "question": "Q2",
+            "expected_behavior": "answer",
+            "must_include_any": ["ok"],
+        }
+    ]
+    seen = []
+
+    def fake_answer(question, history=None, mode=None) -> _Ans:
+        seen.append((question, list(history or []), mode))
+        return _Ans("ok answer", [])
+
+    report = run_eval(answer_fn=fake_answer, items=items, mode="explain")
+    # Q1 asked first with empty history; Q2 then asked with [(Q1, its answer)].
+    assert seen[0] == ("Q1", [], "explain")
+    assert seen[1][0] == "Q2"
+    assert seen[1][1] == [("Q1", "ok answer")]
+    assert report["passed"] == 1
+    assert report["results"][0]["multi_turn"] is True
+    assert report["mode"] == "explain"
+
+
+def test_eval_to_markdown_renders_table():
+    from tests.run_eval import to_markdown
+
+    report = {
+        "total": 1, "passed": 1, "mode": "short",
+        "results": [{"question": "q?", "multi_turn": False, "passed": True,
+                     "reason": "answer contains a required fact", "latency_s": 1.2}],
+    }
+    md = to_markdown(report)
+    assert "1/1 passed" in md and "| ✅ |" in md and "mode: short" in md

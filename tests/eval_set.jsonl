@@ -15,3 +15,6 @@
 {"question": "What is the WiFi setup procedure for this board?", "expected_behavior": "refuse"}
 {"question": "How do I configure Bluetooth pairing on this microcontroller?", "expected_behavior": "refuse"}
 {"question": "What is the retail price of an STM32 development kit?", "expected_behavior": "refuse"}
+{"history_questions": ["What is the maximum CAN bus length at 500 kbps?"], "question": "what about at 250 kbps?", "expected_behavior": "answer", "must_include_any": ["250"], "expect_source": "can_2_0_basics.md"}
+{"history_questions": ["What is a PGN in J1939?"], "question": "explain that in more detail", "expected_behavior": "answer", "must_include_any": ["parameter group", "pgn", "spn"], "expect_source": "j1939_overview.md"}
+{"history_questions": ["What does a passive-error state mean in CAN?"], "question": "and when does it go bus-off?", "expected_behavior": "answer", "must_include_any": ["255", "bus-off", "transmit error counter"], "expect_source": "can_error_handling.md"}
