@@ -20,6 +20,94 @@ from src import config, conversations, documents, ingest, smalltalk
 from src.pipeline import Pipeline
 
 
+def _inject_css() -> None:
+    """Inject presentation-only CSS for a clean, modern chat look (light + dark, warm accent).
+
+    Defensive by design: every rule targets a `data-testid`/class Streamlit has shipped for a
+    long time, and nothing here touches app behavior — if a selector doesn't match on some
+    Streamlit version, the affected element just keeps its default look and the app still works.
+    No external resources (fonts, images, CSS) are loaded — the app is fully offline.
+    """
+    st.markdown(
+        """
+        <style>
+        /* ---------------------------------------------------------------- */
+        /* System font stack only — no external/@import fonts (offline app). */
+        /* ---------------------------------------------------------------- */
+        html, body, [class*="css"] {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+                Arial, sans-serif;
+        }
+
+        /* ---------------------------------------------------------------- */
+        /* Hide Streamlit chrome we don't need, keep the sidebar toggle.     */
+        /* ---------------------------------------------------------------- */
+        #MainMenu { visibility: hidden; }
+        [data-testid="stToolbarActions"] { visibility: hidden; }
+        footer { visibility: hidden; }
+
+        /* ---------------------------------------------------------------- */
+        /* Comfortable, centered reading column (layout stays "wide" so the */
+        /* sidebar keeps its own room).                                     */
+        /* ---------------------------------------------------------------- */
+        .block-container {
+            max-width: 820px;
+            padding-top: 2rem;
+        }
+
+        /* ---------------------------------------------------------------- */
+        /* Chat bubbles: rounded, roomy, theme-agnostic translucent fill so */
+        /* it reads correctly on both light and dark backgrounds.           */
+        /* ---------------------------------------------------------------- */
+        [data-testid="stChatMessage"] {
+            border-radius: 16px;
+            padding: 0.9rem 1.1rem;
+            margin-bottom: 0.9rem;
+            background-color: rgba(127, 127, 127, 0.08);
+            line-height: 1.55;
+        }
+
+        /* ---------------------------------------------------------------- */
+        /* Buttons + example-question chips: softer, pill/card-like.        */
+        /* ---------------------------------------------------------------- */
+        .stButton > button {
+            border-radius: 10px;
+        }
+
+        /* ---------------------------------------------------------------- */
+        /* Sidebar: tidy header spacing, full-width left-aligned chat rows  */
+        /* with a hover background; the active chat (type="primary") gets  */
+        /* a subtle extra emphasis on top of the theme's accent color.      */
+        /* ---------------------------------------------------------------- */
+        [data-testid="stSidebar"] h2 {
+            margin-top: 0.6rem;
+        }
+        [data-testid="stSidebar"] .stButton > button {
+            text-align: left;
+            justify-content: flex-start;
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="secondary"]:hover {
+            background-color: rgba(127, 127, 127, 0.12);
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+            font-weight: 600;
+        }
+
+        /* ---------------------------------------------------------------- */
+        /* Dark-mode tweaks — kept minimal since translucent backgrounds     */
+        /* already adapt to both themes automatically.                      */
+        /* ---------------------------------------------------------------- */
+        @media (prefers-color-scheme: dark) {
+            [data-testid="stChatMessage"] {
+                background-color: rgba(255, 255, 255, 0.06);
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 @st.cache_resource(show_spinner="Loading models and knowledge base...")
 def get_pipeline() -> Pipeline:
     """Build the pipeline once per Streamlit process (models + KB stay warm)."""
@@ -61,7 +149,7 @@ def _handle_uploads(files) -> None:
 
 
 def _render_conversations_sidebar() -> None:
-    """Render the "Conversations" section: new-chat button, switcher, and per-chat delete.
+    """Render the "Conversations" section: new-chat button, switcher, rename, and delete.
 
     Reads/writes `st.session_state.chats` (loaded by `main()` before `_sidebar()` runs) and
     persists every mutation to disk so chat history survives an app restart.
@@ -75,20 +163,33 @@ def _render_conversations_sidebar() -> None:
         st.rerun()
 
     convo_list = chats["conversations"]
-    ids = [c["id"] for c in convo_list]
-    titles = {c["id"]: (c.get("title") or conversations.DEFAULT_TITLE) for c in convo_list}
     current_id = chats.get("current_id")
-    selected = st.sidebar.radio(
-        "Chats",
-        options=ids,
-        format_func=lambda cid: titles[cid],
-        index=ids.index(current_id) if current_id in ids else 0,
-        label_visibility="collapsed",
-    )
-    if selected != current_id:
-        chats["current_id"] = selected
-        conversations.save(config.CHATS_PATH, chats)
-        st.rerun()
+
+    # One full-width button per conversation, standing in for the old radio switcher: the
+    # active chat renders as a primary (accent-colored) button, the rest as secondary.
+    for conv in convo_list:
+        cid = conv["id"]
+        title = conv.get("title") or conversations.DEFAULT_TITLE
+        label = title if len(title) <= 28 else title[:27].rstrip() + "…"
+        is_active = cid == current_id
+        if st.sidebar.button(
+            label,
+            key=f"switch_{cid}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ) and not is_active:
+            chats["current_id"] = cid
+            conversations.save(config.CHATS_PATH, chats)
+            st.rerun()
+
+    current = conversations.current(chats)
+    if current is not None:
+        current_title = current.get("title") or conversations.DEFAULT_TITLE
+        new_title = st.sidebar.text_input("Chat name", value=current_title, key=f"rename_{current['id']}")
+        if new_title != current_title and new_title.strip():
+            conversations.rename_conversation(chats, current["id"], new_title)
+            conversations.save(config.CHATS_PATH, chats)
+            st.rerun()
 
     if st.sidebar.button("🗑 Delete current chat", use_container_width=True):
         conversations.delete_conversation(chats, current_id)
@@ -162,9 +263,9 @@ def _sidebar() -> tuple[str, bool]:
 
 def _render_turn(turn: dict) -> None:
     """Render one saved (question, answer) exchange as chat messages."""
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑‍💻"):
         st.write(turn["question"])
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🔧"):
         st.write(turn["answer"])
         if turn.get("smalltalk"):
             return  # greeting/meta reply: no sources, score, or chunk expander
@@ -191,12 +292,18 @@ def _render_turn(turn: dict) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="CAN Bus / Firmware Q&A", page_icon="🔧", layout="wide")
-    st.title("🔧 Offline CAN Bus / Embedded Firmware Q&A")
+    _inject_css()
+
+    st.markdown(
+        "<div style='display:flex;align-items:center;gap:0.6rem;margin-bottom:0.1rem;'>"
+        "<span style='font-size:2rem;line-height:1;'>🔧</span>"
+        "<span style='font-size:1.6rem;font-weight:700;'>Offline CAN Bus / Embedded Firmware Q&A</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
     st.caption(
-        "Offline retrieval-augmented Q&A over your local embedded-systems corpus, with memory. "
-        "Grounded answers are cited; on-topic gaps may fall back to labeled general knowledge; "
-        "off-topic questions are refused. Chat on the Intel iGPU (OpenVINO), embeddings on the "
-        "NVIDIA GPU (CUDA)."
+        "Offline, grounded & cited — with labeled general-knowledge fallback and refusal "
+        "for off-topic questions."
     )
 
     if "chats" not in st.session_state:
@@ -221,7 +328,8 @@ def main() -> None:
     st.caption(f"{pipeline.size} chunks indexed · mode: **{config.ANSWER_MODES[mode]['label']}**")
 
     if not messages:
-        st.markdown("**Try one of these:**")
+        st.markdown("#### 👋 Ask me about CAN bus & embedded firmware")
+        st.caption("Try one of these to get started:")
         cols = st.columns(2)
         for i, example in enumerate(config.EXAMPLE_QUESTIONS):
             if cols[i % 2].button(example, key=f"example_{i}", use_container_width=True):
@@ -248,9 +356,9 @@ def main() -> None:
             for m in messages
             if not m.get("smalltalk")
         ]
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar="🧑‍💻"):
             st.write(question)
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar="🔧"):
             placeholder = st.empty()
             placeholder.markdown("▌")
             acc = {"text": ""}
